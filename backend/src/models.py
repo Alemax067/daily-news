@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Literal
+from datetime import datetime
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -64,3 +65,82 @@ class ExtractRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     session_id: str | None = None
+
+
+# ===== API request/response schemas (subscription + session) =====
+
+
+class SubscriptionCreateIn(BaseModel):
+    alias: str
+    url: str
+    section: str
+
+
+class SubscriptionOut(BaseModel):
+    id: str
+    alias: str
+    url: str
+    section: str
+    last_refreshed_at: datetime | None = None
+    item_count: int = 0
+    created_at: datetime
+
+
+class SubscriptionDetailOut(SubscriptionOut):
+    list_selectors: ListSelectors
+    detail_selectors: DetailSelectors | None = None
+
+
+class NewsItemOut(BaseModel):
+    id: int
+    subscription_id: str
+    url: str
+    title: str
+    pub_date: str | None = None
+    source: str | None = None
+    fetched_at: datetime
+
+
+class NewsItemDetailOut(NewsItemOut):
+    content: str = ""
+
+
+class RefreshOut(BaseModel):
+    added: int
+    fetched: int
+
+
+class SessionCreateIn(BaseModel):
+    alias: str
+    url: str
+    section: str
+
+
+class ChatMessageOut(BaseModel):
+    role: Literal["user", "assistant", "tool", "system"]
+    content: str = ""
+    tool_calls: list[dict[str, Any]] | None = None
+    tool_name: str | None = None
+
+
+class SessionOut(BaseModel):
+    id: str
+    status: Literal["draft", "confirmed", "abandoned"]
+    alias: str
+    url: str
+    section: str
+    subscription_id: str | None = None
+    messages: list[ChatMessageOut] = Field(default_factory=list)
+
+
+class SessionCreateOut(BaseModel):
+    session_id: str
+    status: Literal["draft", "confirmed", "abandoned"] = "draft"
+
+
+class SessionMessageIn(BaseModel):
+    content: str
+
+
+class SessionConfirmOut(BaseModel):
+    subscription_id: str

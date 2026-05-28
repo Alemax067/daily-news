@@ -7,6 +7,7 @@ from typing import Any
 from deepagents import create_deep_agent
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from . import cache as cache_mod
 from . import extractor
@@ -23,6 +24,11 @@ _SYSTEM_PROMPT = """你是一个新闻抓取助手。用户会给你一个新闻
 - 如果用户反馈"提取错了/为空/标题不对",调用 `clear_selector_cache` 清掉对应站点缓存,然后重试一次。
 - 永远不要编造新闻条目,只展示工具返回的真实数据。
 - 回答简洁:一段话简介 + 一张表格。详情字段过长时截断到 200 字并加省略号。
+
+【新建订阅模式】
+- 用户首次给你 URL + 板块名时,先用 `extract_news max_items=5` 抓取样例,展示表格等待用户反馈。
+- 用户说"标题错了/对应不上/内容不对"等,调用 `clear_selector_cache(prefix=该URL的host)` 重试。
+- 用户说"确认/可以了/保存/没问题",**告诉用户:点击界面上的『保存订阅』按钮**——你不要尝试自己保存。
 """
 
 
@@ -84,10 +90,11 @@ def build_chat_model() -> ChatOpenAI:
     )
 
 
-def build_agent():
+def build_agent(checkpointer: BaseCheckpointSaver | None = None):
     model = build_chat_model()
     return create_deep_agent(
         model=model,
         tools=[extract_news, extract_list_only, extract_detail, clear_selector_cache],
         system_prompt=_SYSTEM_PROMPT,
+        checkpointer=checkpointer,
     )

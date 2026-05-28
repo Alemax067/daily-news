@@ -14,7 +14,7 @@ from .agent import build_agent
 def run_repl() -> None:
     print("daily-news agent (输入 :quit 退出, :reset 重置会话)")
     checkpointer = InMemorySaver()
-    agent = build_agent().with_config({"checkpointer": checkpointer})
+    agent = build_agent(checkpointer=checkpointer)
     session_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": session_id}}
 

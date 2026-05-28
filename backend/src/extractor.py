@@ -153,3 +153,25 @@ def extract_news(
             NewsRecord(title=it.title, url=it.url, date=it.date, detail=detail)
         )
     return records
+
+
+def extract_with_rule(
+    url: str,
+    list_selectors: ListSelectors,
+    detail_selectors: DetailSelectors | None = None,
+    max_items: int = 5,
+    with_detail: bool = True,
+) -> list[NewsRecord]:
+    """Pure extraction using pre-supplied selectors. No cache, no LLM, no writes."""
+    list_html = fetch_html(url)
+    items = _parse_list(list_html, url, list_selectors, max_items)
+    records: list[NewsRecord] = []
+    for it in items:
+        detail: NewsDetail | None = None
+        if with_detail and detail_selectors is not None:
+            detail_html = fetch_html(it.url)
+            detail = _parse_detail(detail_html, detail_selectors)
+        records.append(
+            NewsRecord(title=it.title, url=it.url, date=it.date, detail=detail)
+        )
+    return records
