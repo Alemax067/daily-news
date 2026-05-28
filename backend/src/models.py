@@ -130,6 +130,7 @@ class SessionOut(BaseModel):
     url: str
     section: str
     subscription_id: str | None = None
+    is_streaming: bool = False
     messages: list[ChatMessageOut] = Field(default_factory=list)
 
 

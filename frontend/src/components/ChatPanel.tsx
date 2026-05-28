@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import { streamMessage } from "../api/sse";
-import type { ChatMessage, SessionView } from "../types";
+import { resumeStream, streamMessage } from "../api/sse";
+import type { ChatMessage, SSEEvent, SessionView } from "../types";
 import { Button } from "./Button";
 
 interface Props {
@@ -52,6 +52,13 @@ export function ChatPanel({ sessionId, autoFirstMessage, onClosed }: Props) {
     (async () => {
       const s = await reload();
       if (cancelled || !s) return;
+      // If the agent is still running on the server (e.g., we just refreshed
+      // mid-reply), re-attach to its event stream so the in-flight reply
+      // resumes seamlessly. Buffer is replayed from index 0, then live tail.
+      if (s.is_streaming) {
+        void consume(() => resumeStream(sessionId, makeAbort().signal));
+        return;
+      }
       // Auto-send the first templated message only if conversation is empty.
       if (
         autoFirstMessage &&
@@ -77,36 +84,42 @@ export function ChatPanel({ sessionId, autoFirstMessage, onClosed }: Props) {
     });
   }, [session?.messages.length, liveText, pendingUser, liveTools.length]);
 
-  async function send(content: string) {
+  function makeAbort(): AbortController {
+    const ac = new AbortController();
+    abortRef.current = ac;
+    return ac;
+  }
+
+  function applyEvent(evt: SSEEvent) {
+    if (evt.event === "start") {
+      if (evt.data.user_message) setPendingUser(evt.data.user_message);
+    } else if (evt.event === "token") {
+      setLiveText((t) => t + evt.data.text);
+    } else if (evt.event === "tool_start") {
+      setLiveTools((ts) => [...ts, { name: evt.data.name, ended: false }]);
+    } else if (evt.event === "tool_end") {
+      setLiveTools((ts) => {
+        const idx = ts.findIndex((t) => t.name === evt.data.name && !t.ended);
+        if (idx < 0) return ts;
+        const next = ts.slice();
+        next[idx] = { ...next[idx], ended: true };
+        return next;
+      });
+    } else if (evt.event === "error") {
+      setStreamError(evt.data.error);
+    }
+  }
+
+  async function consume(open: () => AsyncIterable<SSEEvent>) {
     if (streaming) return;
     setStreaming(true);
-    setPendingUser(content);
     setLiveText("");
     setLiveTools([]);
     setStreamError(null);
-    const ac = new AbortController();
-    abortRef.current = ac;
     try {
-      for await (const evt of streamMessage(sessionId, content, ac.signal)) {
-        if (evt.event === "token") {
-          setLiveText((t) => t + evt.data.text);
-        } else if (evt.event === "tool_start") {
-          setLiveTools((ts) => [...ts, { name: evt.data.name, ended: false }]);
-        } else if (evt.event === "tool_end") {
-          setLiveTools((ts) => {
-            const idx = ts.findIndex(
-              (t) => t.name === evt.data.name && !t.ended,
-            );
-            if (idx < 0) return ts;
-            const next = ts.slice();
-            next[idx] = { ...next[idx], ended: true };
-            return next;
-          });
-        } else if (evt.event === "error") {
-          setStreamError(evt.data.error);
-        } else if (evt.event === "done") {
-          break;
-        }
+      for await (const evt of open()) {
+        applyEvent(evt);
+        if (evt.event === "done") break;
       }
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
@@ -120,6 +133,13 @@ export function ChatPanel({ sessionId, autoFirstMessage, onClosed }: Props) {
       abortRef.current = null;
       await reload();
     }
+  }
+
+  async function send(content: string) {
+    if (streaming) return;
+    setPendingUser(content);
+    const ac = makeAbort();
+    await consume(() => streamMessage(sessionId, content, ac.signal));
   }
 
   async function handleSend() {

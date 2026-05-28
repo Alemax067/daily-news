@@ -1,18 +1,30 @@
 """FastAPI service: subscriptions + agent sessions (SSE) + news.
 
 Routes:
-- /sessions  POST/GET/DELETE,  /sessions/{id}/messages (SSE),  /sessions/{id}/confirm
+- /sessions  POST/GET/DELETE,  /sessions/{id}/messages (SSE start),
+  /sessions/{id}/stream (SSE resume),  /sessions/{id}/confirm
 - /subscriptions  GET/DELETE,  /subscriptions/{id}/refresh,  /subscriptions/{id}/news
 - /news/{id}  GET
 - /extract,  /detail  (legacy direct calls)
+
+Session streaming model
+-----------------------
+Each agent turn runs as a detached `asyncio.Task` writing into a shared
+event buffer (`StreamRun`). Clients subscribe via SSE; client disconnect
+does NOT cancel the producer, so a page refresh can re-attach via
+`GET /sessions/{id}/stream` and replay the buffer + continue live.
+
+Two gates protect `confirm_session`:
+  1. Both list AND detail selectors must have been learned (verified).
+  2. No active stream may be in flight.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
@@ -61,7 +73,26 @@ from .models import (
 )
 
 
+# ===== detached agent runs =====
+
+
+@dataclass
+class StreamRun:
+    """One agent turn running detached from any HTTP connection.
+
+    Multiple SSE subscribers can independently iterate `events` from their
+    own position; new appends fire `cond.notify_all()` to wake them.
+    """
+
+    session_id: str
+    events: list[dict[str, Any]] = field(default_factory=list)
+    done: bool = False
+    cond: asyncio.Condition = field(default_factory=asyncio.Condition)
+    task: asyncio.Task[None] | None = None
+
+
 _state: dict[str, Any] = {}
+_streams: dict[str, StreamRun] = {}
 
 
 @asynccontextmanager
@@ -78,6 +109,10 @@ async def _lifespan(app: FastAPI):
         try:
             yield
         finally:
+            for run in list(_streams.values()):
+                if run.task is not None and not run.task.done():
+                    run.task.cancel()
+            _streams.clear()
             _state.clear()
 
 
@@ -162,6 +197,91 @@ def _sub_to_out(s: Subscription, item_count: int = 0) -> SubscriptionOut:
     )
 
 
+def _is_streaming(session_id: str) -> bool:
+    run = _streams.get(session_id)
+    return run is not None and not run.done
+
+
+def _sse(event: str, data: Any) -> str:
+    payload = json.dumps(data, ensure_ascii=False)
+    return f"event: {event}\ndata: {payload}\n\n"
+
+
+async def _push_event(run: StreamRun, ev: dict[str, Any]) -> None:
+    async with run.cond:
+        run.events.append(ev)
+        run.cond.notify_all()
+
+
+async def _mark_done(run: StreamRun) -> None:
+    async with run.cond:
+        if not run.done:
+            run.events.append({"event": "done", "data": {}})
+            run.done = True
+            run.cond.notify_all()
+
+
+async def _run_agent_turn(
+    run: StreamRun, agent: Any, config: dict[str, Any], content: str
+) -> None:
+    """Producer: drives the agent and appends translated events to the buffer.
+
+    Survives client disconnect — only stops on completion, error, or
+    explicit task.cancel() (server shutdown / new turn supersedes).
+    """
+    await _push_event(run, {"event": "start", "data": {"user_message": content}})
+    try:
+        with cache_mod.session_store(run.session_id, str(DB_PATH)):
+            async for event in agent.astream_events(
+                {"messages": [HumanMessage(content=content)]},
+                config=config,
+                version="v2",
+            ):
+                kind = event.get("event")
+                if kind == "on_chat_model_stream":
+                    chunk = event.get("data", {}).get("chunk")
+                    text = (
+                        _msg_text(getattr(chunk, "content", ""))
+                        if chunk is not None
+                        else ""
+                    )
+                    if text:
+                        await _push_event(run, {"event": "token", "data": {"text": text}})
+                elif kind == "on_tool_start":
+                    name = event.get("name") or event.get("data", {}).get("name")
+                    inp = event.get("data", {}).get("input")
+                    await _push_event(
+                        run,
+                        {"event": "tool_start", "data": {"name": name, "input": inp}},
+                    )
+                elif kind == "on_tool_end":
+                    name = event.get("name") or event.get("data", {}).get("name")
+                    await _push_event(run, {"event": "tool_end", "data": {"name": name}})
+    except asyncio.CancelledError:
+        await _push_event(run, {"event": "error", "data": {"error": "cancelled"}})
+        raise
+    except Exception as e:
+        await _push_event(run, {"event": "error", "data": {"error": str(e)}})
+    finally:
+        await _mark_done(run)
+
+
+async def _iter_run(run: StreamRun) -> AsyncIterator[str]:
+    """Subscriber: yields SSE frames from `events`, blocking on cond when caught up."""
+    pos = 0
+    while True:
+        async with run.cond:
+            while pos >= len(run.events) and not run.done:
+                await run.cond.wait()
+            available = run.events[pos:]
+            done = run.done
+        for ev in available:
+            yield _sse(ev["event"], ev["data"])
+            pos += 1
+        if done and pos >= len(run.events):
+            return
+
+
 # ===== sessions =====
 
 
@@ -204,6 +324,7 @@ async def get_session_endpoint(
         url=sess.url,
         section=sess.section,
         subscription_id=sess.subscription_id,
+        is_streaming=_is_streaming(session_id),
         messages=_to_chat_messages(messages),
     )
 
@@ -215,15 +336,14 @@ async def delete_session_endpoint(
     sess = await db.get(ChatSession, session_id)
     if sess is None:
         raise HTTPException(status_code=404, detail="session not found")
+    run = _streams.get(session_id)
+    if run is not None and run.task is not None and not run.task.done():
+        run.task.cancel()
+    _streams.pop(session_id, None)
     if sess.status == "draft":
         sess.status = "abandoned"
         await db.commit()
     return {"ok": True}
-
-
-def _sse(event: str, data: Any) -> str:
-    payload = json.dumps(data, ensure_ascii=False)
-    return f"event: {event}\ndata: {payload}\n\n"
 
 
 @app.post("/sessions/{session_id}/messages")
@@ -238,39 +358,39 @@ async def post_session_message(
     if sess.status != "draft":
         raise HTTPException(status_code=409, detail=f"session is {sess.status}")
 
+    if _is_streaming(session_id):
+        raise HTTPException(
+            status_code=409, detail="智能体正在回复中,请等当前轮结束再发送"
+        )
+
+    # Replace any prior completed run for this session.
+    _streams.pop(session_id, None)
+
     agent = _agent()
     config = {"configurable": {"thread_id": session_id}}
-
-    async def gen() -> AsyncIterator[str]:
-        with cache_mod.session_store(session_id, str(DB_PATH)):
-            try:
-                yield _sse("start", {})
-                async for event in agent.astream_events(
-                    {"messages": [HumanMessage(content=body.content)]},
-                    config=config,
-                    version="v2",
-                ):
-                    kind = event.get("event")
-                    if kind == "on_chat_model_stream":
-                        chunk = event.get("data", {}).get("chunk")
-                        text = _msg_text(getattr(chunk, "content", "")) if chunk is not None else ""
-                        if text:
-                            yield _sse("token", {"text": text})
-                    elif kind == "on_tool_start":
-                        name = event.get("name") or event.get("data", {}).get("name")
-                        inp = event.get("data", {}).get("input")
-                        yield _sse("tool_start", {"name": name, "input": inp})
-                    elif kind == "on_tool_end":
-                        name = event.get("name") or event.get("data", {}).get("name")
-                        yield _sse("tool_end", {"name": name})
-                yield _sse("done", {})
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                yield _sse("error", {"error": str(e)})
+    run = StreamRun(session_id=session_id)
+    _streams[session_id] = run
+    run.task = asyncio.create_task(_run_agent_turn(run, agent, config, body.content))
 
     return StreamingResponse(
-        gen(),
+        _iter_run(run),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/sessions/{session_id}/stream")
+async def stream_session(session_id: str) -> StreamingResponse:
+    """Resume subscription to an in-flight (or just-completed) agent run.
+
+    The buffer is replayed from index 0 so a fresh client rebuilds full
+    state without needing prior event ids; live tail is then streamed.
+    """
+    run = _streams.get(session_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="无活动或已缓存的流")
+    return StreamingResponse(
+        _iter_run(run),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -288,6 +408,13 @@ async def confirm_session(
     if sess.status != "draft":
         raise HTTPException(status_code=409, detail=f"session is {sess.status}")
 
+    # 闸 2: never confirm while the agent is still talking.
+    if _is_streaming(session_id):
+        raise HTTPException(
+            status_code=409, detail="智能体正在回复中,请等回复完成再保存"
+        )
+
+    # 闸 1a: list selectors required.
     list_sel: ListSelectors | None = None
     if sess.list_selectors_json:
         cache_dict = json.loads(sess.list_selectors_json)
@@ -297,21 +424,27 @@ async def confirm_session(
     if list_sel is None:
         raise HTTPException(
             status_code=400,
-            detail="agent 还没成功抓过列表,请继续对话直到看到新闻表格再确认",
+            detail="智能体还没成功抓过列表,请继续对话直到看到新闻表格再保存",
         )
+    # 闸 1b: detail selectors required — verifies the full pipeline ran end-to-end.
     detail_sel: DetailSelectors | None = None
     if sess.detail_selectors_json:
         cache_dict = json.loads(sess.detail_selectors_json)
         raw = cache_dict.get(cache_mod.detail_key(sess.url))
         if raw:
             detail_sel = DetailSelectors.model_validate(raw)
+    if detail_sel is None:
+        raise HTTPException(
+            status_code=400,
+            detail="智能体还没成功抓过详情,请等智能体把至少一条新闻的正文抓出来再保存",
+        )
 
     sub = Subscription(
         alias=sess.alias,
         url=sess.url,
         section=sess.section,
         list_selectors_json=list_sel.model_dump_json(),
-        detail_selectors_json=detail_sel.model_dump_json() if detail_sel else None,
+        detail_selectors_json=detail_sel.model_dump_json(),
     )
     db.add(sub)
     try:
@@ -325,6 +458,7 @@ async def confirm_session(
     sess.status = "confirmed"
     sess.subscription_id = sub.id
     await db.commit()
+    _streams.pop(session_id, None)
     return SessionConfirmOut(subscription_id=sub.id)
 
 

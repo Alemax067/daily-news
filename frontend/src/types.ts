@@ -62,6 +62,7 @@ export interface SessionView {
   url: string;
   section: string;
   subscription_id: string | null;
+  is_streaming: boolean;
   messages: ChatMessage[];
 }
 
@@ -71,7 +72,7 @@ export interface RefreshResult {
 }
 
 export type SSEEvent =
-  | { event: "start"; data: Record<string, never> }
+  | { event: "start"; data: { user_message?: string } }
   | { event: "token"; data: { text: string } }
   | { event: "tool_start"; data: { name: string; input: unknown } }
   | { event: "tool_end"; data: { name: string } }

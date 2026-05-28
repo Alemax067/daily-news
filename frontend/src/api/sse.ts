@@ -1,9 +1,10 @@
 import type { SSEEvent } from "../types";
 
 /**
- * POST /sessions/{id}/messages and yield parsed SSE events as an async generator.
- * Caller can `for await (const e of streamMessage(...))` and update UI.
- * Pass an AbortSignal to cancel the in-flight request from outside.
+ * POST /sessions/{id}/messages — start a new agent turn and stream events.
+ * The server runs the agent in a detached background task, so a client
+ * disconnect (refresh) does NOT abort the agent. Use `resumeStream` to
+ * re-attach to an in-flight run after a refresh.
  */
 export async function* streamMessage(
   sessionId: string,
@@ -19,6 +20,30 @@ export async function* streamMessage(
     body: JSON.stringify({ content }),
     signal,
   });
+  yield* fromResponse(r, signal);
+}
+
+/**
+ * GET /sessions/{id}/stream — re-attach to an active or just-completed run.
+ * Server replays its event buffer from index 0, then streams the live tail.
+ * 404 if no run is registered for the session.
+ */
+export async function* resumeStream(
+  sessionId: string,
+  signal?: AbortSignal,
+): AsyncGenerator<SSEEvent, void, void> {
+  const r = await fetch(`/api/sessions/${sessionId}/stream`, {
+    method: "GET",
+    headers: { accept: "text/event-stream" },
+    signal,
+  });
+  yield* fromResponse(r, signal);
+}
+
+async function* fromResponse(
+  r: Response,
+  _signal?: AbortSignal,
+): AsyncGenerator<SSEEvent, void, void> {
   if (!r.ok) {
     let detail = `${r.status} ${r.statusText}`;
     try {
