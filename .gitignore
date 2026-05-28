@@ -1,0 +1,12 @@
+node_modules/
+frontend/node_modules/
+backend/.venv/
+.pytest_cache/
+**/__pycache__/
+frontend/dist/
+.claude/
+.env
+!.env.example
+source.md
+docs/
+data/
