@@ -4,12 +4,15 @@ Public API:
     extract_news(url, section, with_detail=True, max_items=20) -> list[NewsRecord]
     extract_list_only(url, section, max_items=20) -> list[NewsItem]
     extract_detail(url) -> NewsDetail
+    extract_paginated(...) -> PaginatedResult  # 自动化抓取专用,带翻页 + 多种停止条件
 """
 
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Literal
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup, Tag
@@ -206,3 +209,164 @@ def extract_with_rule(
             NewsRecord(title=it.title, url=it.url, date=list_date_iso, detail=detail)
         )
     return records
+
+
+# ===== 自动化抓取:翻页 + 多种停止条件 =====
+
+
+StopReason = Literal[
+    "quota",  # first_n / since_days 配额满
+    "overlap",  # incremental 翻到与已有 url 重叠
+    "cutoff",  # since_days pub_date 早于 cutoff
+    "max_pages",  # 翻页硬上限触发
+    "max_items",  # 总条数硬上限触发
+    "no_template",  # next_page_template 为 null,只能抓第 1 页
+    "no_more_pages",  # 翻页拿到的 list 为空
+    "fetch_error",  # 翻页 HTTP / 解析失败,优雅降级
+]
+
+
+@dataclass
+class PaginatedResult:
+    records: list[NewsRecord] = field(default_factory=list)
+    pages_fetched: int = 0
+    stop_reason: StopReason = "quota"
+
+
+def _url_for_page(base_url: str, template: str, n: int) -> str:
+    """Resolve page-N URL: substitute {n} into template, then urljoin against base.
+
+    Examples:
+        base="https://x/col/123/index.html", template="index_{n}.html"  → ".../index_2.html"
+        base="https://x/list?page=1", template="?page={n}"               → ".../list?page=2"
+    """
+    return urljoin(base_url, template.format(n=n))
+
+
+def _build_record(
+    item: NewsItem,
+    list_sel: ListSelectors,
+    detail_sel: DetailSelectors | None,
+    with_detail: bool,
+) -> NewsRecord:
+    list_date_iso = normalize_pub_date(item.date, list_sel.date_patterns, list_sel.date_output)
+    detail: NewsDetail | None = None
+    if with_detail and detail_sel is not None:
+        try:
+            detail_html = fetch_html(item.url)
+            detail = _parse_detail(detail_html, detail_sel)
+            detail_date_iso = normalize_pub_date(
+                detail.date, detail_sel.date_patterns, detail_sel.date_output
+            )
+            detail = detail.model_copy(update={"date": detail_date_iso})
+        except Exception:
+            # 单条详情失败不应整批失败:留下 list 信息,detail=None
+            detail = None
+    return NewsRecord(title=item.title, url=item.url, date=list_date_iso, detail=detail)
+
+
+def _effective_pub_date(rec: NewsRecord) -> str | None:
+    """Final pub_date that would land in DB: list date 优先,fallback detail date."""
+    if rec.date:
+        return rec.date
+    if rec.detail and rec.detail.date:
+        return rec.detail.date
+    return None
+
+
+def extract_paginated(
+    url: str,
+    list_selectors: ListSelectors,
+    detail_selectors: DetailSelectors | None,
+    *,
+    mode: Literal["first_n", "since_days", "incremental"],
+    n: int | None = None,
+    existing_urls: set[str] | None = None,
+    max_pages: int = 5,
+    max_items: int = 100,
+    with_detail: bool = True,
+) -> PaginatedResult:
+    """自动化路径抓取:支持翻页 + 多种停止条件。
+
+    mode:
+      - 'first_n':       拿满 n 条停;n 必填。
+      - 'since_days':    拿到 pub_date < (today-n) 停;n 必填(天数)。pub_date 缺失 → 收下不停。
+      - 'incremental':   翻到任意 url 出现在 existing_urls 即停;existing_urls 必填(可空集表示新订阅)。
+
+    硬上限:max_pages 和 max_items 任一触发即停。next_page_template=None 只跑第 1 页。
+    """
+    if mode == "first_n" and (n is None or n < 1):
+        raise ValueError("first_n mode requires n >= 1")
+    if mode == "since_days" and (n is None or n < 1):
+        raise ValueError("since_days mode requires n >= 1 (days)")
+    if mode == "incremental" and existing_urls is None:
+        raise ValueError("incremental mode requires existing_urls (may be empty set)")
+
+    cutoff_iso: str | None = None
+    if mode == "since_days" and n is not None:
+        cutoff_dt = datetime.now(timezone.utc).date() - timedelta(days=n)
+        cutoff_iso = cutoff_dt.strftime("%Y-%m-%d")  # compare lexicographically with ISO pub_date
+
+    result = PaginatedResult()
+    template = list_selectors.next_page_template
+    page = 1
+    seen_in_run: set[str] = set()
+
+    while True:
+        if page > max_pages:
+            result.stop_reason = "max_pages"
+            return result
+        if page == 1:
+            page_url = url
+        elif template:
+            page_url = _url_for_page(url, template, page)
+        else:
+            result.stop_reason = "no_template"
+            return result
+
+        try:
+            html = fetch_html(page_url)
+            # 单页解析量取 max_items 上限,后续硬上限再裁;实际 _parse_list 的 max_items 仅是单页内的截断
+            items = _parse_list(html, page_url, list_selectors, max_items=max_items)
+        except Exception:
+            if page == 1:
+                # 第 1 页失败直接抛出,让上层记到 task.error
+                raise
+            result.stop_reason = "fetch_error"
+            return result
+
+        result.pages_fetched = page
+
+        if not items:
+            result.stop_reason = "no_more_pages" if page > 1 else "quota"
+            return result
+
+        for item in items:
+            if item.url in seen_in_run:
+                continue  # 防御:同一 run 内重复 url(站点列表自带重复)
+            seen_in_run.add(item.url)
+
+            if mode == "incremental" and item.url in (existing_urls or set()):
+                result.stop_reason = "overlap"
+                return result
+
+            rec = _build_record(item, list_selectors, detail_selectors, with_detail)
+            pub = _effective_pub_date(rec)
+
+            if mode == "since_days" and cutoff_iso is not None and pub is not None and pub < cutoff_iso:
+                result.stop_reason = "cutoff"
+                return result
+
+            result.records.append(rec)
+
+            if len(result.records) >= max_items:
+                result.stop_reason = "max_items"
+                return result
+            if mode == "first_n" and n is not None and len(result.records) >= n:
+                result.stop_reason = "quota"
+                return result
+
+        page += 1
+        if not template:
+            result.stop_reason = "no_template"
+            return result

@@ -1,7 +1,11 @@
 """Reduce HTML to a structural skeleton suitable for an LLM to study.
 
 Goals:
-- Drop noise: <script>, <style>, <svg>, <noscript>, <iframe>, comments, base64 imgs.
+- Drop noise: <style>, <svg>, <noscript>, <iframe>, comments, base64 imgs,
+  external/large <script> bundles (jQuery, analytics, framework code).
+- Keep small inline <script> bodies — these often hold pagination configs
+  (e.g. `Pager({prefix:'index', suffix:'html'})`) or JSON-LD bits that
+  are load-bearing for selector inference.
 - Keep tag names, class/id attributes, href targets, and trimmed text.
 - Truncate overlong text nodes — selector inference doesn't need full article bodies.
 """
@@ -13,11 +17,14 @@ import re
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
 
-_DROP_TAGS = {"script", "style", "noscript", "svg", "iframe", "meta", "link"}
+# script 单独处理(条件保留 inline 小脚本),不在 _DROP_TAGS 里。
+_DROP_TAGS = {"style", "noscript", "svg", "iframe", "meta", "link"}
 _KEEP_ATTRS_STRUCT = {"class", "id", "href", "name"}
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 _TEXT_CHAR_BUDGET = 40
 _TEXT_PLACEHOLDER = "_"
+# inline <script> 内容超过这个长度判为 minified 大块,丢弃;低于则原样保留。
+_INLINE_SCRIPT_MAX_CHARS = 500
 
 
 def _trim_text(txt: str) -> str:
@@ -27,8 +34,30 @@ def _trim_text(txt: str) -> str:
     return txt
 
 
+def _should_keep_script(tag: Tag) -> bool:
+    """Inline + 短小的 script 留下(常见用于 Pager 配置 / JSON-LD);其他都丢。"""
+    if tag.get("src"):
+        return False
+    body = tag.string or "".join(
+        c for c in tag.strings if isinstance(c, NavigableString)
+    )
+    if not body:
+        return False
+    body = body.strip()
+    if not body:
+        return False
+    return len(body) <= _INLINE_SCRIPT_MAX_CHARS
+
+
 def _serialize(node: Tag, out: list[str], depth: int, keep_text_in_headings: bool) -> None:
     indent = "  " * depth
+    if node.name == "script":
+        body = (node.string or "").strip()
+        # 折成单行,让骨架紧凑
+        body = re.sub(r"\s+", " ", body)
+        out.append(f"{indent}<script>{body}</script>")
+        return
+
     attrs = []
     keep_attrs = set(_KEEP_ATTRS_STRUCT)
     if keep_text_in_headings and node.name in _HEADING_TAGS:
@@ -87,6 +116,10 @@ def to_skeleton(html: str, max_chars: int = 40000, keep_text_in_headings: bool =
     for tag_name in _DROP_TAGS:
         for t in soup.find_all(tag_name):
             t.decompose()
+    # script 按规则筛:大块 / external 丢,inline 小段留。
+    for s in soup.find_all("script"):
+        if not _should_keep_script(s):
+            s.decompose()
     for c in soup.find_all(string=lambda x: isinstance(x, Comment)):
         c.extract()
 

@@ -100,8 +100,13 @@ class SubscriptionOut(BaseModel):
     alias: str
     url: str
     section: str
+    auto_enabled: bool = True
+    # 自动化路径:由 scheduler worker 写入,展示在 /automation 页
     last_refreshed_at: datetime | None = None
     item_count: int = 0
+    # 订阅管理路径:由 refresh-preview 写入,展示在 /subscriptions 页
+    preview_refreshed_at: datetime | None = None
+    preview_item_count: int = 0
     created_at: datetime
 
 
@@ -164,3 +169,59 @@ class SessionMessageIn(BaseModel):
 
 class SessionConfirmOut(BaseModel):
     subscription_id: str
+
+
+class UpdateFromSessionIn(BaseModel):
+    session_id: str
+
+
+class SessionLookupOut(BaseModel):
+    session_id: str | None = None
+
+
+# ===== automation: settings + tasks =====
+
+
+class SubscriptionPatchIn(BaseModel):
+    auto_enabled: bool
+
+
+class AppSettingsOut(BaseModel):
+    trigger_time: str
+    interval_hours: int
+    new_sub_strategy: Literal["first_n", "since_days"]
+    new_sub_n: int
+    last_auto_run_at: datetime | None = None
+
+
+class AppSettingsIn(BaseModel):
+    trigger_time: str
+    interval_hours: int
+    new_sub_strategy: Literal["first_n", "since_days"]
+    new_sub_n: int
+
+
+class FetchTaskOut(BaseModel):
+    id: int
+    subscription_id: str
+    subscription_alias: str | None = None
+    status: Literal["pending", "running", "succeeded", "failed"]
+    source: Literal["manual", "auto"]
+    enqueued_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    items_added: int | None = None
+    items_fetched: int | None = None
+    pages_fetched: int | None = None
+    stop_reason: str | None = None
+    error: str | None = None
+
+
+class TriggerAutomationOut(BaseModel):
+    enqueued: int
+
+
+class QueueSnapshotOut(BaseModel):
+    running: FetchTaskOut | None = None
+    pending: list[FetchTaskOut] = Field(default_factory=list)
+    recent_done: list[FetchTaskOut] = Field(default_factory=list)

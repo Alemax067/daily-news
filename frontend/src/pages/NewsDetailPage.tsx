@@ -1,4 +1,4 @@
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useNewsDetail } from "../api/hooks";
 
 function fmtDate(iso: string | null | undefined): string {
@@ -8,6 +8,7 @@ function fmtDate(iso: string | null | undefined): string {
 
 export function NewsDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const [params] = useSearchParams();
   const num = id ? parseInt(id, 10) : undefined;
   const { data, isLoading, error } = useNewsDetail(num);
 
@@ -15,13 +16,17 @@ export function NewsDetailPage() {
   if (error) return <div className="text-red-600">加载失败:{(error as Error).message}</div>;
   if (!data) return null;
 
+  const from = params.get("from");
+  const backTo =
+    from === "automation"
+      ? `/automation/subscriptions/${data.subscription_id}`
+      : `/subscriptions/${data.subscription_id}`;
+  const backLabel = from === "automation" ? "← 返回自动化新闻列表" : "← 返回订阅预览";
+
   return (
     <div className="space-y-4">
-      <Link
-        to={`/subscriptions/${data.subscription_id}`}
-        className="text-sm text-slate-500 hover:underline"
-      >
-        ← 返回新闻列表
+      <Link to={backTo} className="text-sm text-slate-500 hover:underline">
+        {backLabel}
       </Link>
       <article className="bg-white rounded-lg border border-slate-200 p-6">
         <h1 className="text-2xl font-semibold leading-tight">{data.title}</h1>

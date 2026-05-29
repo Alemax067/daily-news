@@ -21,6 +21,31 @@ export function useSubscriptionNews(id: string | undefined) {
   });
 }
 
+export function useSubscriptionPreview(id: string | undefined) {
+  return useQuery({
+    queryKey: ["subscription", id, "preview"],
+    queryFn: () => api.listPreviewNews(id!),
+    enabled: !!id,
+  });
+}
+
+export function useSubscriptionSessionLookup(id: string | undefined) {
+  return useQuery({
+    queryKey: ["subscription", id, "session"],
+    queryFn: () => api.getSubscriptionSession(id!),
+    enabled: !!id,
+  });
+}
+
+export function useSubscriptionTasks(id: string | undefined) {
+  return useQuery({
+    queryKey: ["subscription", id, "tasks"],
+    queryFn: () => api.listSubscriptionTasks(id!),
+    enabled: !!id,
+    refetchInterval: 5000,
+  });
+}
+
 export function useNewsDetail(id: number | undefined) {
   return useQuery({
     queryKey: ["news", id],
@@ -29,14 +54,14 @@ export function useNewsDetail(id: number | undefined) {
   });
 }
 
-export function useRefreshSubscription() {
+export function useRefreshPreview() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: api.refreshSubscription,
+    mutationFn: api.refreshPreview,
     onSuccess: (_data, id) => {
       qc.invalidateQueries({ queryKey: ["subscriptions"] });
       qc.invalidateQueries({ queryKey: ["subscription", id] });
-      qc.invalidateQueries({ queryKey: ["subscription", id, "news"] });
+      qc.invalidateQueries({ queryKey: ["subscription", id, "preview"] });
     },
   });
 }
@@ -47,6 +72,55 @@ export function useDeleteSubscription() {
     mutationFn: api.deleteSubscription,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["subscriptions"] });
+    },
+  });
+}
+
+export function usePatchSubscription() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, auto_enabled }: { id: string; auto_enabled: boolean }) =>
+      api.patchSubscription(id, { auto_enabled }),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["subscriptions"] });
+      qc.invalidateQueries({ queryKey: ["subscription", vars.id] });
+    },
+  });
+}
+
+// ===== automation =====
+
+export function useAutomationSettings() {
+  return useQuery({
+    queryKey: ["automation", "settings"],
+    queryFn: api.getAutomationSettings,
+  });
+}
+
+export function useAutomationQueue() {
+  return useQuery({
+    queryKey: ["automation", "queue"],
+    queryFn: api.getAutomationQueue,
+    refetchInterval: 5000,
+  });
+}
+
+export function useSetAutomationSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.setAutomationSettings,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["automation", "settings"] });
+    },
+  });
+}
+
+export function useTriggerAutomation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.triggerAutomation,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["automation", "queue"] });
     },
   });
 }

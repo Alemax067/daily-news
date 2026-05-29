@@ -1,7 +1,7 @@
 import { Link, useNavigate } from "react-router-dom";
 import {
   useDeleteSubscription,
-  useRefreshSubscription,
+  useRefreshPreview,
   useSubscriptions,
 } from "../api/hooks";
 import { Button } from "../components/Button";
@@ -14,7 +14,7 @@ function fmtDate(iso: string | null | undefined): string {
 
 export function SubscriptionsPage() {
   const { data, isLoading, error } = useSubscriptions();
-  const refresh = useRefreshSubscription();
+  const refresh = useRefreshPreview();
   const del = useDeleteSubscription();
   const navigate = useNavigate();
 
@@ -37,7 +37,16 @@ export function SubscriptionsPage() {
 
   return (
     <div className="space-y-3">
-      <h2 className="text-xl font-semibold">已有订阅 ({data.length})</h2>
+      <div className="flex items-baseline justify-between">
+        <h2 className="text-xl font-semibold">订阅管理 ({data.length})</h2>
+        <p className="text-xs text-slate-500">
+          这里的「刷新」抓最新 5 条到预览;自动化抓取在
+          <Link to="/automation" className="text-blue-600 hover:underline mx-1">
+            自动化
+          </Link>
+          页设置
+        </p>
+      </div>
       <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-left text-slate-600">
@@ -45,8 +54,8 @@ export function SubscriptionsPage() {
               <th className="px-4 py-2">别名</th>
               <th className="px-4 py-2">板块</th>
               <th className="px-4 py-2">URL</th>
-              <th className="px-4 py-2">条目</th>
-              <th className="px-4 py-2">上次刷新</th>
+              <th className="px-4 py-2">预览条目</th>
+              <th className="px-4 py-2">上次预览刷新</th>
               <th className="px-4 py-2 w-44 text-right">操作</th>
             </tr>
           </thead>
@@ -62,9 +71,9 @@ export function SubscriptionsPage() {
                 <td className="px-4 py-3 text-slate-600 max-w-xs truncate">
                   {s.url}
                 </td>
-                <td className="px-4 py-3">{s.item_count}</td>
+                <td className="px-4 py-3">{s.preview_item_count}</td>
                 <td className="px-4 py-3 text-slate-600">
-                  {fmtDate(s.last_refreshed_at)}
+                  {fmtDate(s.preview_refreshed_at)}
                 </td>
                 <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                   <Button
@@ -74,7 +83,7 @@ export function SubscriptionsPage() {
                     onClick={() =>
                       refresh.mutate(s.id, {
                         onSuccess: (r) =>
-                          alert(`已抓取 ${r.fetched} 条,新增 ${r.added} 条`),
+                          alert(`已抓取 ${r.fetched} 条到预览`),
                         onError: (e) => alert("刷新失败:" + (e as Error).message),
                       })
                     }

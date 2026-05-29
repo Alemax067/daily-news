@@ -5,8 +5,11 @@ export interface Subscription {
   alias: string;
   url: string;
   section: string;
+  auto_enabled: boolean;
   last_refreshed_at: string | null;
   item_count: number;
+  preview_refreshed_at: string | null;
+  preview_item_count: number;
   created_at: string;
 }
 
@@ -77,4 +80,42 @@ export type SSEEvent =
   | { event: "tool_start"; data: { name: string; input: unknown } }
   | { event: "tool_end"; data: { name: string } }
   | { event: "done"; data: Record<string, never> }
-  | { event: "error"; data: { error: string } };
+  | { event: "error"; data: { error: string } }
+  | { event: "snapshot"; data: QueueSnapshot };
+
+// ===== automation =====
+
+export type FetchTaskStatus = "pending" | "running" | "succeeded" | "failed";
+export type FetchTaskSource = "manual" | "auto";
+
+export interface FetchTask {
+  id: number;
+  subscription_id: string;
+  subscription_alias: string | null;
+  status: FetchTaskStatus;
+  source: FetchTaskSource;
+  enqueued_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  items_added: number | null;
+  items_fetched: number | null;
+  pages_fetched: number | null;
+  stop_reason: string | null;
+  error: string | null;
+}
+
+export interface QueueSnapshot {
+  running: FetchTask | null;
+  pending: FetchTask[];
+  recent_done: FetchTask[];
+}
+
+export type NewSubStrategy = "first_n" | "since_days";
+
+export interface AppSettings {
+  trigger_time: string;
+  interval_hours: number;
+  new_sub_strategy: NewSubStrategy;
+  new_sub_n: number;
+  last_auto_run_at?: string | null;
+}

@@ -9,7 +9,8 @@ export function Layout() {
           <h1 className="text-lg font-bold text-slate-900">daily-news</h1>
           <nav className="flex gap-1 ml-4">
             <Tab to="/new">新建订阅</Tab>
-            <Tab to="/subscriptions">已有订阅</Tab>
+            <Tab to="/subscriptions">订阅管理</Tab>
+            <Tab to="/automation">自动化</Tab>
           </nav>
         </div>
       </header>

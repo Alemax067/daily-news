@@ -11,6 +11,14 @@ interface Props {
   /** if given, automatically sent on first mount when no messages exist yet */
   autoFirstMessage?: string;
   onClosed: () => void;
+  /** "create" → POST /confirm. "update" → POST /update-from-session.
+   *  Default 'create' preserves the new-subscription flow.
+   */
+  mode?: "create" | "update";
+  /** Outer height class. Default fills page; embedded views pass `h-full`. */
+  heightClass?: string;
+  /** Called after a successful confirm/update. Defaults to navigate to /subscriptions in create mode. */
+  onConfirmed?: (subscriptionId: string) => void;
 }
 
 interface LiveTool {
@@ -18,7 +26,14 @@ interface LiveTool {
   ended: boolean;
 }
 
-export function ChatPanel({ sessionId, autoFirstMessage, onClosed }: Props) {
+export function ChatPanel({
+  sessionId,
+  autoFirstMessage,
+  onClosed,
+  mode = "create",
+  heightClass = "h-[calc(100vh-200px)] min-h-[500px]",
+  onConfirmed,
+}: Props) {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [session, setSession] = useState<SessionView | null>(null);
@@ -152,18 +167,40 @@ export function ChatPanel({ sessionId, autoFirstMessage, onClosed }: Props) {
   async function handleConfirm() {
     setConfirming(true);
     try {
-      await api.confirmSession(sessionId);
+      let subId: string;
+      if (mode === "update") {
+        if (!session?.subscription_id) {
+          throw new Error("session 没有关联订阅,无法更新");
+        }
+        subId = session.subscription_id;
+        await api.updateFromSession(subId, sessionId);
+        qc.invalidateQueries({ queryKey: ["subscription", subId] });
+      } else {
+        const r = await api.confirmSession(sessionId);
+        subId = r.subscription_id;
+      }
       qc.invalidateQueries({ queryKey: ["subscriptions"] });
-      onClosed();
-      navigate("/subscriptions");
+      if (onConfirmed) {
+        onConfirmed(subId);
+      } else {
+        onClosed();
+        if (mode === "create") navigate("/subscriptions");
+      }
     } catch (e) {
-      alert("保存失败:" + (e as Error).message);
+      alert(
+        (mode === "update" ? "更新失败:" : "保存失败:") + (e as Error).message,
+      );
     } finally {
       setConfirming(false);
     }
   }
 
   async function handleCancel() {
+    if (mode === "update") {
+      // update 模式不删 session,只关闭面板
+      onClosed();
+      return;
+    }
     if (!confirm("放弃本次对话?草稿会被清除。")) return;
     abortRef.current?.abort();
     try {
@@ -187,7 +224,7 @@ export function ChatPanel({ sessionId, autoFirstMessage, onClosed }: Props) {
   }
 
   return (
-    <div className="bg-white rounded-lg border border-slate-200 flex flex-col h-[calc(100vh-200px)] min-h-[500px]">
+    <div className={`bg-white rounded-lg border border-slate-200 flex flex-col ${heightClass}`}>
       {/* header */}
       <div className="border-b border-slate-200 px-4 py-3 flex items-start justify-between">
         <div className="text-sm">
@@ -196,15 +233,27 @@ export function ChatPanel({ sessionId, autoFirstMessage, onClosed }: Props) {
           <div className="text-slate-500 text-xs break-all">{session.url}</div>
         </div>
         <div className="flex gap-2">
-          <Button variant="ghost" onClick={handleCancel}>
-            取消
-          </Button>
+          {mode === "create" && (
+            <Button variant="ghost" onClick={handleCancel}>
+              取消
+            </Button>
+          )}
           <Button
             disabled={confirming || streaming}
             onClick={handleConfirm}
-            title="把当前规则入库,生成正式订阅"
+            title={
+              mode === "update"
+                ? "用当前对话学到的选择器覆盖订阅规则"
+                : "把当前规则入库,生成正式订阅"
+            }
           >
-            {confirming ? "保存中…" : "保存订阅"}
+            {confirming
+              ? mode === "update"
+                ? "更新中…"
+                : "保存中…"
+              : mode === "update"
+                ? "更新订阅"
+                : "保存订阅"}
           </Button>
         </div>
       </div>

@@ -3,7 +3,10 @@
 Routes:
 - /sessions  POST/GET/DELETE,  /sessions/{id}/messages (SSE start),
   /sessions/{id}/stream (SSE resume),  /sessions/{id}/confirm
-- /subscriptions  GET/DELETE,  /subscriptions/{id}/refresh,  /subscriptions/{id}/news
+- /subscriptions  GET/DELETE,
+  /subscriptions/{id}/refresh-preview,  /subscriptions/{id}/preview-news,
+  /subscriptions/{id}/session,  /subscriptions/{id}/update-from-session,
+  /subscriptions/{id}/news
 - /news/{id}  GET
 - /extract,  /detail  (legacy direct calls)
 
@@ -23,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -45,11 +49,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import cache as cache_mod
 from . import extractor
+from . import scheduler
 from .agent import build_agent
 from .db import (
     DB_PATH,
+    AppSettings,
     ChatSession,
+    FetchTask,
+    NewsItemPreviewRow,
     NewsItemRow,
+    SessionLocal,
     Subscription,
     dispose_db,
     get_session,
@@ -58,20 +67,28 @@ from .db import (
 from .extractor import extract_detail, extract_list_only, extract_news
 from .fetcher import clear_fetch_cache
 from .models import (
+    AppSettingsIn,
+    AppSettingsOut,
     ChatMessageOut,
     DetailSelectors,
     ExtractRequest,
+    FetchTaskOut,
     ListSelectors,
     NewsItemDetailOut,
     NewsItemOut,
+    QueueSnapshotOut,
     RefreshOut,
     SessionConfirmOut,
     SessionCreateIn,
     SessionCreateOut,
+    SessionLookupOut,
     SessionMessageIn,
     SessionOut,
     SubscriptionDetailOut,
     SubscriptionOut,
+    SubscriptionPatchIn,
+    TriggerAutomationOut,
+    UpdateFromSessionIn,
 )
 
 
@@ -108,9 +125,14 @@ async def _lifespan(app: FastAPI):
         agent = build_agent(checkpointer=checkpointer)
         _state["checkpointer"] = checkpointer
         _state["agent"] = agent
+        # 启动恢复 + 后台任务
+        await scheduler.recover_on_startup(_state)
+        scheduler.start_background(_state)
         try:
             yield
         finally:
+            # 0. 先停后台任务,避免 worker 在 shutdown 期间继续打 DB
+            await scheduler.stop_background(_state)
             # 1. cancel any in-flight stream producers and wait for them to
             #    unwind so they don't write to checkpointer mid-shutdown.
             tasks = [
@@ -203,14 +225,22 @@ def _to_chat_messages(msgs: list[BaseMessage]) -> list[ChatMessageOut]:
     return out
 
 
-def _sub_to_out(s: Subscription, item_count: int = 0) -> SubscriptionOut:
+def _sub_to_out(
+    s: Subscription,
+    item_count: int = 0,
+    preview_item_count: int = 0,
+    preview_refreshed_at: datetime | None = None,
+) -> SubscriptionOut:
     return SubscriptionOut(
         id=s.id,
         alias=s.alias,
         url=s.url,
         section=s.section,
+        auto_enabled=s.auto_enabled,
         last_refreshed_at=s.last_refreshed_at,
         item_count=item_count,
+        preview_refreshed_at=preview_refreshed_at,
+        preview_item_count=preview_item_count,
         created_at=s.created_at,
     )
 
@@ -373,7 +403,7 @@ async def post_session_message(
     sess = await db.get(ChatSession, session_id)
     if sess is None:
         raise HTTPException(status_code=404, detail="session not found")
-    if sess.status != "draft":
+    if sess.status not in ("draft", "confirmed"):
         raise HTTPException(status_code=409, detail=f"session is {sess.status}")
 
     if _is_streaming(session_id):
@@ -385,7 +415,7 @@ async def post_session_message(
     _streams.pop(session_id, None)
 
     agent = _agent()
-    config = {"configurable": {"thread_id": session_id}, "recursion_limit": 100}
+    config = {"configurable": {"thread_id": session_id}, "recursion_limit": 500}
     run = StreamRun(session_id=session_id)
     _streams[session_id] = run
     run.task = asyncio.create_task(_run_agent_turn(run, agent, config, body.content))
@@ -487,21 +517,45 @@ async def confirm_session(
 async def list_subscriptions(
     db: AsyncSession = Depends(get_session),
 ) -> list[SubscriptionOut]:
-    rows = (
-        (
-            await db.execute(
-                select(
-                    Subscription,
-                    func.count(NewsItemRow.id).label("cnt"),
-                )
-                .outerjoin(NewsItemRow, NewsItemRow.subscription_id == Subscription.id)
-                .group_by(Subscription.id)
-                .order_by(Subscription.created_at.desc())
-            )
+    auto_cnt = (
+        select(
+            NewsItemRow.subscription_id.label("sid"),
+            func.count(NewsItemRow.id).label("cnt"),
         )
-        .all()
+        .group_by(NewsItemRow.subscription_id)
+        .subquery()
     )
-    return [_sub_to_out(s, cnt) for s, cnt in rows]
+    prev_agg = (
+        select(
+            NewsItemPreviewRow.subscription_id.label("sid"),
+            func.count(NewsItemPreviewRow.id).label("cnt"),
+            func.max(NewsItemPreviewRow.fetched_at).label("max_fetched"),
+        )
+        .group_by(NewsItemPreviewRow.subscription_id)
+        .subquery()
+    )
+    rows = (
+        await db.execute(
+            select(
+                Subscription,
+                func.coalesce(auto_cnt.c.cnt, 0).label("auto_cnt"),
+                func.coalesce(prev_agg.c.cnt, 0).label("prev_cnt"),
+                prev_agg.c.max_fetched.label("prev_at"),
+            )
+            .outerjoin(auto_cnt, auto_cnt.c.sid == Subscription.id)
+            .outerjoin(prev_agg, prev_agg.c.sid == Subscription.id)
+            .order_by(Subscription.created_at.desc())
+        )
+    ).all()
+    return [
+        _sub_to_out(
+            s,
+            item_count=int(auto_cnt_v),
+            preview_item_count=int(prev_cnt_v),
+            preview_refreshed_at=prev_at_v,
+        )
+        for s, auto_cnt_v, prev_cnt_v, prev_at_v in rows
+    ]
 
 
 @app.get("/subscriptions/{sub_id}", response_model=SubscriptionDetailOut)
@@ -518,14 +572,31 @@ async def get_subscription(
             )
         )
     ).scalar_one()
+    prev_cnt = (
+        await db.execute(
+            select(func.count(NewsItemPreviewRow.id)).where(
+                NewsItemPreviewRow.subscription_id == sub.id
+            )
+        )
+    ).scalar_one()
+    prev_at = (
+        await db.execute(
+            select(func.max(NewsItemPreviewRow.fetched_at)).where(
+                NewsItemPreviewRow.subscription_id == sub.id
+            )
+        )
+    ).scalar_one()
     return SubscriptionDetailOut(
         id=sub.id,
         alias=sub.alias,
         url=sub.url,
         section=sub.section,
+        auto_enabled=sub.auto_enabled,
         created_at=sub.created_at,
         last_refreshed_at=sub.last_refreshed_at,
         item_count=cnt,
+        preview_refreshed_at=prev_at,
+        preview_item_count=prev_cnt,
         list_selectors=ListSelectors.model_validate_json(sub.list_selectors_json),
         detail_selectors=(
             DetailSelectors.model_validate_json(sub.detail_selectors_json)
@@ -547,10 +618,11 @@ async def delete_subscription(
     return {"ok": True}
 
 
-@app.post("/subscriptions/{sub_id}/refresh", response_model=RefreshOut)
-async def refresh_subscription(
+@app.post("/subscriptions/{sub_id}/refresh-preview", response_model=RefreshOut)
+async def refresh_subscription_preview(
     sub_id: str, db: AsyncSession = Depends(get_session)
 ) -> RefreshOut:
+    """订阅管理 tab 用:抓最新 5 条到 news_items_preview,DELETE+INSERT 覆盖。"""
     sub = await db.get(Subscription, sub_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="subscription not found")
@@ -574,22 +646,17 @@ async def refresh_subscription(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"refresh failed: {e}") from e
 
+    # 覆盖式:先清空该 sub 的预览行,再批量 INSERT。
+    await db.execute(
+        NewsItemPreviewRow.__table__.delete().where(
+            NewsItemPreviewRow.subscription_id == sub_id
+        )
+    )
     fetched = len(records)
-    added = 0
     for r in records:
-        existing = (
-            await db.execute(
-                select(NewsItemRow).where(
-                    NewsItemRow.subscription_id == sub.id,
-                    NewsItemRow.url == r.url,
-                )
-            )
-        ).scalar_one_or_none()
-        if existing is not None:
-            continue
         d = r.detail
         db.add(
-            NewsItemRow(
+            NewsItemPreviewRow(
                 subscription_id=sub.id,
                 url=r.url,
                 title=r.title,
@@ -598,10 +665,122 @@ async def refresh_subscription(
                 content=(d.content if d else ""),
             )
         )
-        added += 1
-    sub.last_refreshed_at = datetime.now(timezone.utc)
     await db.commit()
-    return RefreshOut(added=added, fetched=fetched)
+    return RefreshOut(added=fetched, fetched=fetched)
+
+
+@app.get("/subscriptions/{sub_id}/preview-news", response_model=list[NewsItemOut])
+async def list_subscription_preview_news(
+    sub_id: str, db: AsyncSession = Depends(get_session)
+) -> list[NewsItemOut]:
+    sub = await db.get(Subscription, sub_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="subscription not found")
+    # NULL pub_date 用 fetched_at 字符串补位,与有日期的混排。
+    sort_key = func.coalesce(
+        NewsItemPreviewRow.pub_date,
+        func.strftime("%Y-%m-%d %H:%M:%S", NewsItemPreviewRow.fetched_at),
+    )
+    rows = (
+        (
+            await db.execute(
+                select(NewsItemPreviewRow)
+                .where(NewsItemPreviewRow.subscription_id == sub_id)
+                .order_by(
+                    sort_key.desc(),
+                    NewsItemPreviewRow.fetched_at.desc(),
+                    NewsItemPreviewRow.id.desc(),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        NewsItemOut(
+            id=n.id,
+            subscription_id=n.subscription_id,
+            url=n.url,
+            title=n.title,
+            pub_date=n.pub_date,
+            source=n.source,
+            fetched_at=n.fetched_at,
+        )
+        for n in rows
+    ]
+
+
+@app.get("/subscriptions/{sub_id}/session", response_model=SessionLookupOut)
+async def get_subscription_session(
+    sub_id: str, db: AsyncSession = Depends(get_session)
+) -> SessionLookupOut:
+    """订阅管理 reopen:返回该订阅唯一一个 confirmed session(由 partial unique index 保证唯一)。"""
+    sub = await db.get(Subscription, sub_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="subscription not found")
+    sess = (
+        await db.execute(
+            select(ChatSession).where(
+                ChatSession.subscription_id == sub_id,
+                ChatSession.status == "confirmed",
+            )
+        )
+    ).scalar_one_or_none()
+    return SessionLookupOut(session_id=sess.id if sess else None)
+
+
+@app.post("/subscriptions/{sub_id}/update-from-session")
+async def update_subscription_from_session(
+    sub_id: str,
+    body: UpdateFromSessionIn,
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, bool]:
+    """订阅管理 reopen 后,把 session 当前学到的 selectors 覆盖回 subscription。
+
+    沿用 confirm 的两个闸门:
+      - list + detail 必须都已学到
+      - 不允许在流式回复中操作
+    """
+    sub = await db.get(Subscription, sub_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="subscription not found")
+    sess = await db.get(ChatSession, body.session_id)
+    if sess is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    if sess.subscription_id != sub_id or sess.status != "confirmed":
+        raise HTTPException(
+            status_code=409, detail="session 不属于此订阅或不是 confirmed 状态"
+        )
+    if _is_streaming(sess.id):
+        raise HTTPException(
+            status_code=409, detail="智能体正在回复中,请等回复完成再更新"
+        )
+
+    list_sel: ListSelectors | None = None
+    if sess.list_selectors_json:
+        cache_dict = json.loads(sess.list_selectors_json)
+        raw = cache_dict.get(cache_mod.list_key(sess.url, sess.section))
+        if raw:
+            list_sel = ListSelectors.model_validate(raw)
+    if list_sel is None:
+        raise HTTPException(
+            status_code=400, detail="session 中暂无可用 list 选择器,请继续对话"
+        )
+    detail_sel: DetailSelectors | None = None
+    if sess.detail_selectors_json:
+        cache_dict = json.loads(sess.detail_selectors_json)
+        raw = cache_dict.get(cache_mod.detail_key(sess.url))
+        if raw:
+            detail_sel = DetailSelectors.model_validate(raw)
+    if detail_sel is None:
+        raise HTTPException(
+            status_code=400, detail="session 中暂无可用 detail 选择器,请继续对话"
+        )
+
+    sub.list_selectors_json = list_sel.model_dump_json()
+    sub.detail_selectors_json = detail_sel.model_dump_json()
+    await db.commit()
+    return {"ok": True}
 
 
 @app.get("/subscriptions/{sub_id}/news", response_model=list[NewsItemOut])
@@ -614,12 +793,20 @@ async def list_subscription_news(
     sub = await db.get(Subscription, sub_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="subscription not found")
+    sort_key = func.coalesce(
+        NewsItemRow.pub_date,
+        func.strftime("%Y-%m-%d %H:%M:%S", NewsItemRow.fetched_at),
+    )
     rows = (
         (
             await db.execute(
                 select(NewsItemRow)
                 .where(NewsItemRow.subscription_id == sub_id)
-                .order_by(NewsItemRow.fetched_at.desc(), NewsItemRow.id.desc())
+                .order_by(
+                    sort_key.desc(),
+                    NewsItemRow.fetched_at.desc(),
+                    NewsItemRow.id.desc(),
+                )
                 .limit(limit)
                 .offset(offset)
             )
@@ -660,6 +847,246 @@ async def get_news(
         source=n.source,
         content=n.content,
         fetched_at=n.fetched_at,
+    )
+
+
+# ===== automation: per-subscription patch + tasks =====
+
+
+_TRIGGER_TIME_RE = re.compile(r"^([01]\d|2[0-3]):(00|30)$")
+
+
+def _queue_event() -> asyncio.Event:
+    """Lazily create the shared asyncio.Event used to wake SSE subscribers
+    when fetch_tasks status changes. Scheduler calls .set() on transitions.
+    """
+    ev = _state.get("queue_event")
+    if ev is None:
+        ev = asyncio.Event()
+        _state["queue_event"] = ev
+    return ev
+
+
+def _settings_event() -> asyncio.Event:
+    """Used to nudge scheduler_loop when settings change."""
+    ev = _state.get("settings_event")
+    if ev is None:
+        ev = asyncio.Event()
+        _state["settings_event"] = ev
+    return ev
+
+
+def _task_to_out(task: FetchTask, alias: str | None = None) -> FetchTaskOut:
+    return FetchTaskOut(
+        id=task.id,
+        subscription_id=task.subscription_id,
+        subscription_alias=alias,
+        status=task.status,  # type: ignore[arg-type]
+        source=task.source,  # type: ignore[arg-type]
+        enqueued_at=task.enqueued_at,
+        started_at=task.started_at,
+        finished_at=task.finished_at,
+        items_added=task.items_added,
+        items_fetched=task.items_fetched,
+        pages_fetched=task.pages_fetched,
+        stop_reason=task.stop_reason,
+        error=task.error,
+    )
+
+
+async def _build_queue_snapshot(db: AsyncSession) -> QueueSnapshotOut:
+    """Snapshot for /automation/queue and SSE: running + pending + recent_done."""
+    # 并行三条查询用 SELECT ... JOIN subscriptions 拿 alias
+    running_row = (
+        await db.execute(
+            select(FetchTask, Subscription.alias)
+            .join(Subscription, Subscription.id == FetchTask.subscription_id)
+            .where(FetchTask.status == "running")
+            .order_by(FetchTask.started_at.desc())
+            .limit(1)
+        )
+    ).first()
+    pending_rows = (
+        await db.execute(
+            select(FetchTask, Subscription.alias)
+            .join(Subscription, Subscription.id == FetchTask.subscription_id)
+            .where(FetchTask.status == "pending")
+            .order_by(FetchTask.enqueued_at.asc())
+        )
+    ).all()
+    done_rows = (
+        await db.execute(
+            select(FetchTask, Subscription.alias)
+            .join(Subscription, Subscription.id == FetchTask.subscription_id)
+            .where(FetchTask.status.in_(["succeeded", "failed"]))
+            .order_by(FetchTask.finished_at.desc())
+            .limit(20)
+        )
+    ).all()
+    return QueueSnapshotOut(
+        running=_task_to_out(running_row[0], running_row[1]) if running_row else None,
+        pending=[_task_to_out(t, a) for t, a in pending_rows],
+        recent_done=[_task_to_out(t, a) for t, a in done_rows],
+    )
+
+
+@app.patch("/subscriptions/{sub_id}", response_model=SubscriptionOut)
+async def patch_subscription(
+    sub_id: str,
+    body: SubscriptionPatchIn,
+    db: AsyncSession = Depends(get_session),
+) -> SubscriptionOut:
+    sub = await db.get(Subscription, sub_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="subscription not found")
+    sub.auto_enabled = body.auto_enabled
+    await db.commit()
+    cnt = (
+        await db.execute(
+            select(func.count(NewsItemRow.id)).where(NewsItemRow.subscription_id == sub.id)
+        )
+    ).scalar_one()
+    return _sub_to_out(sub, cnt)
+
+
+@app.get("/subscriptions/{sub_id}/tasks", response_model=list[FetchTaskOut])
+async def list_subscription_tasks(
+    sub_id: str,
+    limit: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_session),
+) -> list[FetchTaskOut]:
+    sub = await db.get(Subscription, sub_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="subscription not found")
+    rows = (
+        (
+            await db.execute(
+                select(FetchTask)
+                .where(FetchTask.subscription_id == sub_id)
+                .order_by(FetchTask.enqueued_at.desc(), FetchTask.id.desc())
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [_task_to_out(t, sub.alias) for t in rows]
+
+
+# ===== automation: settings =====
+
+
+def _validate_settings(body: AppSettingsIn) -> str | None:
+    if not _TRIGGER_TIME_RE.match(body.trigger_time):
+        return "trigger_time 必须形如 HH:MM 且分钟为 :00 或 :30"
+    if body.interval_hours not in (12, 24):
+        return "interval_hours 必须是 12 或 24"
+    if body.new_sub_strategy == "first_n" and not (1 <= body.new_sub_n <= 100):
+        return "first_n 模式下 new_sub_n 必须在 1..100"
+    if body.new_sub_strategy == "since_days" and not (1 <= body.new_sub_n <= 90):
+        return "since_days 模式下 new_sub_n 必须在 1..90"
+    return None
+
+
+@app.get("/automation/settings", response_model=AppSettingsOut)
+async def get_automation_settings(
+    db: AsyncSession = Depends(get_session),
+) -> AppSettingsOut:
+    s = await db.get(AppSettings, 1)
+    if s is None:
+        raise HTTPException(status_code=500, detail="settings row missing; init_db 应保证有")
+    return AppSettingsOut(
+        trigger_time=s.trigger_time,
+        interval_hours=s.interval_hours,
+        new_sub_strategy=s.new_sub_strategy,  # type: ignore[arg-type]
+        new_sub_n=s.new_sub_n,
+        last_auto_run_at=s.last_auto_run_at,
+    )
+
+
+@app.put("/automation/settings", response_model=AppSettingsOut)
+async def set_automation_settings(
+    body: AppSettingsIn,
+    db: AsyncSession = Depends(get_session),
+) -> AppSettingsOut:
+    err = _validate_settings(body)
+    if err is not None:
+        raise HTTPException(status_code=400, detail=err)
+    s = await db.get(AppSettings, 1)
+    if s is None:
+        raise HTTPException(status_code=500, detail="settings row missing; init_db 应保证有")
+    s.trigger_time = body.trigger_time
+    s.interval_hours = body.interval_hours
+    s.new_sub_strategy = body.new_sub_strategy
+    s.new_sub_n = body.new_sub_n
+    await db.commit()
+    # 通知调度循环重新计算下次 fire 时间
+    _settings_event().set()
+    return AppSettingsOut(
+        trigger_time=s.trigger_time,
+        interval_hours=s.interval_hours,
+        new_sub_strategy=s.new_sub_strategy,  # type: ignore[arg-type]
+        new_sub_n=s.new_sub_n,
+        last_auto_run_at=s.last_auto_run_at,
+    )
+
+
+# ===== automation: trigger + queue =====
+
+
+@app.post("/automation/trigger", response_model=TriggerAutomationOut)
+async def trigger_automation(
+    db: AsyncSession = Depends(get_session),
+) -> TriggerAutomationOut:
+    """手动触发一轮:把所有 auto_enabled=True 的订阅入队,source='manual'。"""
+    rows = (
+        (
+            await db.execute(
+                select(Subscription.id).where(Subscription.auto_enabled.is_(True))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for sid in rows:
+        db.add(FetchTask(subscription_id=sid, status="pending", source="manual"))
+    await db.commit()
+    if rows:
+        _queue_event().set()
+    return TriggerAutomationOut(enqueued=len(rows))
+
+
+@app.get("/automation/queue", response_model=QueueSnapshotOut)
+async def get_queue_snapshot(
+    db: AsyncSession = Depends(get_session),
+) -> QueueSnapshotOut:
+    return await _build_queue_snapshot(db)
+
+
+@app.get("/automation/queue/stream")
+async def stream_queue() -> StreamingResponse:
+    """SSE: 推送队列状态快照。worker 每次状态翻转 set queue_event,这里 wait 后重新查 DB 推送。"""
+
+    async def gen() -> AsyncIterator[str]:
+        ev = _queue_event()
+        async with SessionLocal() as db:
+            snap = await _build_queue_snapshot(db)
+        yield _sse("snapshot", snap.model_dump(mode="json"))
+        while True:
+            try:
+                await asyncio.wait_for(ev.wait(), timeout=5.0)
+                ev.clear()
+            except asyncio.TimeoutError:
+                # 5s heartbeat-cum-poll,兜底防漏推
+                pass
+            async with SessionLocal() as db:
+                snap = await _build_queue_snapshot(db)
+            yield _sse("snapshot", snap.model_dump(mode="json"))
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

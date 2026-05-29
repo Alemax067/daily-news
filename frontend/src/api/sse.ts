@@ -40,6 +40,21 @@ export async function* resumeStream(
   yield* fromResponse(r, signal);
 }
 
+/**
+ * GET /automation/queue/stream — long-lived SSE pushing queue snapshots
+ * each time the worker flips a task status. 5s heartbeat tick from server.
+ */
+export async function* streamAutomationQueue(
+  signal?: AbortSignal,
+): AsyncGenerator<SSEEvent, void, void> {
+  const r = await fetch(`/api/automation/queue/stream`, {
+    method: "GET",
+    headers: { accept: "text/event-stream" },
+    signal,
+  });
+  yield* fromResponse(r, signal);
+}
+
 async function* fromResponse(
   r: Response,
   _signal?: AbortSignal,

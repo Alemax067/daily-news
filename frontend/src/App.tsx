@@ -1,9 +1,11 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { Layout } from "./components/Layout";
+import { AutomationPage } from "./pages/AutomationPage";
+import { AutomationSubscriptionPage } from "./pages/AutomationSubscriptionPage";
 import { NewSubscriptionPage } from "./pages/NewSubscriptionPage";
-import { SubscriptionsPage } from "./pages/SubscriptionsPage";
-import { SubscriptionDetailPage } from "./pages/SubscriptionDetailPage";
 import { NewsDetailPage } from "./pages/NewsDetailPage";
+import { SubscriptionDetailPage } from "./pages/SubscriptionDetailPage";
+import { SubscriptionsPage } from "./pages/SubscriptionsPage";
 
 export default function App() {
   return (
@@ -13,6 +15,11 @@ export default function App() {
         <Route path="new" element={<NewSubscriptionPage />} />
         <Route path="subscriptions" element={<SubscriptionsPage />} />
         <Route path="subscriptions/:id" element={<SubscriptionDetailPage />} />
+        <Route path="automation" element={<AutomationPage />} />
+        <Route
+          path="automation/subscriptions/:id"
+          element={<AutomationSubscriptionPage />}
+        />
         <Route path="news/:id" element={<NewsDetailPage />} />
       </Route>
     </Routes>
