@@ -1,0 +1,13 @@
+{
+  "name": "daily-news",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "setup": "npm install && pnpm install --dir frontend && uv sync --project backend",
+    "db:migrate": "uv run --project backend alembic -c backend/alembic.ini upgrade head",
+    "dev": "npm run db:migrate && concurrently -n backend,frontend -c green,cyan \"uv run --project backend uvicorn src.api:app --reload --host :: --port 8765 --app-dir backend\" \"until python -c \\\"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=1)\\\" >/dev/null 2>&1; do sleep 0.2; done; pnpm --dir frontend dev\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

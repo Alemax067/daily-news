@@ -333,6 +333,12 @@ async def _iter_run(run: StreamRun) -> AsyncIterator[str]:
 # ===== sessions =====
 
 
+@app.get("/health")
+async def health() -> dict[str, str]:
+    """Liveness probe used by `npm run dev` to wait until backend is ready."""
+    return {"status": "ok"}
+
+
 @app.post("/sessions", response_model=SessionCreateOut)
 async def create_session(
     body: SessionCreateIn, db: AsyncSession = Depends(get_session)

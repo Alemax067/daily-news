@@ -17,6 +17,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.20",
     "langgraph-checkpoint-sqlite>=2.0",
+    "alembic>=1.18.4",
 ]
 
 [project.scripts]

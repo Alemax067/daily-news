@@ -13,7 +13,7 @@ def cli_entry() -> None:
 
     p_serve = sub.add_parser("serve", help="run FastAPI server")
     p_serve.add_argument("--host", default="0.0.0.0")
-    p_serve.add_argument("--port", type=int, default=8000)
+    p_serve.add_argument("--port", type=int, default=8765)
 
     sub.add_parser("chat", help="interactive REPL")
 

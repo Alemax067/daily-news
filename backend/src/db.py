@@ -8,6 +8,11 @@ Tables:
   partial unique index 保证一个订阅至多一个 confirmed session
 - app_settings: 单行 (id=1) 自动化抓取参数(触发时间/间隔/新订阅策略)
 - fetch_tasks: 自动化任务队列 + 历史
+
+Schema 演进走 Alembic(backend/alembic/versions/)。`init_db()` 启动时:
+- 全新库 → alembic upgrade head
+- 已有项目表但没 alembic_version(老库)→ stamp head 把现状当作初始版本,然后 upgrade head
+- 已 stamp 过 → 普通 upgrade head 应用未跑过的迁移
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import (
@@ -26,6 +32,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     event,
+    inspect,
     text,
 )
 from sqlalchemy.ext.asyncio import (
@@ -198,14 +205,64 @@ def _enable_sqlite_pragmas(dbapi_conn: Any, _record: Any) -> None:
 
 async def init_db() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    async with _engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # 应用 Alembic 迁移到最新版本。三种情况:
+    #   1) DB 文件不存在 / 完全空 → upgrade head 创建所有表
+    #   2) DB 已有项目表但没 alembic_version(早期 create_all 留下的库)→
+    #      先 stamp head 把现状当作 initial,再 upgrade head 应用后续迁移
+    #   3) 已 stamp 过 → 普通 upgrade head
+    await _run_migrations()
     # Seed singleton AppSettings row if missing.
     async with SessionLocal() as session:
         existing = await session.get(AppSettings, 1)
         if existing is None:
             session.add(AppSettings(id=1))
             await session.commit()
+
+
+def _run_alembic_sync() -> None:
+    """Synchronous body of the migration step. Called from a thread because
+    Alembic's command API is sync; running it inside the async engine context
+    would deadlock SQLite WAL.
+    """
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine
+
+    backend_root = Path(__file__).resolve().parents[1]
+    cfg = Config(str(backend_root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(backend_root / "alembic"))
+
+    sync_url = f"sqlite:///{DB_PATH}"
+    sync_engine = create_engine(sync_url)
+    try:
+        with sync_engine.connect() as conn:
+            insp = inspect(conn)
+            existing = set(insp.get_table_names())
+            has_version = "alembic_version" in existing
+            project_tables = {
+                "subscriptions",
+                "news_items",
+                "news_items_preview",
+                "chat_sessions",
+                "app_settings",
+                "fetch_tasks",
+            }
+            legacy_pre_alembic = (not has_version) and bool(existing & project_tables)
+            if legacy_pre_alembic:
+                # 老库已有完整 schema,但没经过 alembic。把它标记为已经在最新
+                # 已知 head;后续真正的迁移再增量 upgrade。
+                command.stamp(cfg, "head")
+        # 正常 upgrade,fresh 情况下从 0 跑到 head;legacy 情况下因为 stamp 已是
+        # head,upgrade 是 no-op;后续新加迁移则在这里被应用。
+        command.upgrade(cfg, "head")
+    finally:
+        sync_engine.dispose()
+
+
+async def _run_migrations() -> None:
+    import asyncio
+
+    await asyncio.to_thread(_run_alembic_sync)
 
 
 async def dispose_db() -> None:

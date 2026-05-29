@@ -46,9 +46,9 @@ uv run python -m src.main extract \
 uv run python -m src.main extract --url ... --section ... --no-detail
 
 # 启动 HTTP API
-uv run python -m src.main serve --port 8000
-# POST http://localhost:8000/extract  body: {"url":"...","section":"...","with_detail":true}
-# POST http://localhost:8000/chat     body: {"message":"...","session_id":"..."}
+uv run python -m src.main serve --port 8765
+# POST http://localhost:8765/extract  body: {"url":"...","section":"...","with_detail":true}
+# POST http://localhost:8765/chat     body: {"message":"...","session_id":"..."}
 
 # 进入对话式 REPL
 uv run python -m src.main chat
