@@ -117,6 +117,15 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
 
 
+async def dispose_db() -> None:
+    """Release the SQLAlchemy async engine's connection pool.
+
+    Without this the WAL file can't checkpoint on shutdown because pooled
+    connections are still considered live; lifespan calls this on exit.
+    """
+    await _engine.dispose()
+
+
 async def get_session() -> AsyncIterator[AsyncSession]:
     async with SessionLocal() as session:
         yield session

@@ -34,7 +34,7 @@ export function NewSubscriptionPage() {
     try {
       const { session_id } = await api.createSession(alias, url, section);
       const sess = await api.getSession(session_id);
-      const seed = `URL: ${url}\n板块: ${section}\n请用 extract_news 抓 5 条样例发我看看。`;
+      const seed = `列表页 URL: ${url}\n板块: ${section}\n请按工作流调试出 list 和 detail 选择器,搞定后告诉我点保存订阅。`;
       setAutoFirst(seed);
       setFormOpen(false);
       draft.setDraft(sess);

@@ -51,10 +51,12 @@ from .db import (
     ChatSession,
     NewsItemRow,
     Subscription,
+    dispose_db,
     get_session,
     init_db,
 )
 from .extractor import extract_detail, extract_list_only, extract_news
+from .fetcher import clear_fetch_cache
 from .models import (
     ChatMessageOut,
     DetailSelectors,
@@ -109,11 +111,27 @@ async def _lifespan(app: FastAPI):
         try:
             yield
         finally:
-            for run in list(_streams.values()):
-                if run.task is not None and not run.task.done():
-                    run.task.cancel()
+            # 1. cancel any in-flight stream producers and wait for them to
+            #    unwind so they don't write to checkpointer mid-shutdown.
+            tasks = [
+                run.task
+                for run in _streams.values()
+                if run.task is not None and not run.task.done()
+            ]
+            for t in tasks:
+                t.cancel()
+            if tasks:
+                await asyncio.wait(tasks, timeout=2.0)
             _streams.clear()
             _state.clear()
+            clear_fetch_cache()
+            # 2. release SQLAlchemy's pooled connections so SQLite can
+            #    checkpoint WAL → main DB. Without this, .db-wal and .db-shm
+            #    linger after process exit.
+            await dispose_db()
+        # 3. AsyncExitStack exits here → AsyncSqliteSaver closes its own
+        #    sqlite connection. Order matters: dispose_db before this so
+        #    no SQLAlchemy connection holds the WAL open.
 
 
 app = FastAPI(title="daily-news agent", lifespan=_lifespan)
@@ -367,7 +385,7 @@ async def post_session_message(
     _streams.pop(session_id, None)
 
     agent = _agent()
-    config = {"configurable": {"thread_id": session_id}}
+    config = {"configurable": {"thread_id": session_id}, "recursion_limit": 100}
     run = StreamRun(session_id=session_id)
     _streams[session_id] = run
     run.task = asyncio.create_task(_run_agent_turn(run, agent, config, body.content))

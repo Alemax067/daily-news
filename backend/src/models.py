@@ -37,6 +37,17 @@ class ListSelectors(BaseModel):
     url_attr: str = Field(default="href")
     date: str | None = Field(default=None, description="CSS selector for date; null if not on list page")
     date_attr: Literal["text"] = Field(default="text")
+    date_patterns: list[str] | None = Field(
+        default=None,
+        description=(
+            "strptime format strings tried in order; first match wins. "
+            "Required by commit_selectors when `date` is non-null."
+        ),
+    )
+    date_output: Literal["iso_date", "iso_datetime"] | None = Field(
+        default=None,
+        description="Normalized output: 'iso_date' → YYYY-MM-DD, 'iso_datetime' → YYYY-MM-DD HH:MM:SS.",
+    )
     next_page_template: str | None = Field(
         default=None,
         description=(
@@ -53,6 +64,14 @@ class DetailSelectors(BaseModel):
     date: str | None = Field(default=None)
     source: str | None = Field(default=None)
     content: str = Field(description="CSS selector for the main article body container")
+    date_patterns: list[str] | None = Field(
+        default=None,
+        description="strptime format strings tried in order; first match wins.",
+    )
+    date_output: Literal["iso_date", "iso_datetime"] | None = Field(
+        default=None,
+        description="'iso_date' → YYYY-MM-DD, 'iso_datetime' → YYYY-MM-DD HH:MM:SS.",
+    )
 
 
 class ExtractRequest(BaseModel):

@@ -9,6 +9,7 @@ Public API:
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup, Tag
@@ -32,6 +33,25 @@ def _select_one(scope: Tag, selector: str) -> Tag | None:
         return scope.select_one(selector)
     except Exception:
         return None
+
+
+def normalize_pub_date(
+    raw: str | None,
+    patterns: list[str] | None,
+    output: str | None,
+) -> str | None:
+    """Try strptime patterns in order; return ISO string on first success, else None."""
+    if not raw or not patterns or not output:
+        return None
+    fmt_out = "%Y-%m-%d" if output == "iso_date" else "%Y-%m-%d %H:%M:%S"
+    text = raw.strip()
+    for pat in patterns:
+        try:
+            dt = datetime.strptime(text, pat)
+        except ValueError:
+            continue
+        return dt.strftime(fmt_out)
+    return None
 
 
 def _extract_attr(node: Tag | None, attr: str) -> str | None:
@@ -162,16 +182,27 @@ def extract_with_rule(
     max_items: int = 5,
     with_detail: bool = True,
 ) -> list[NewsRecord]:
-    """Pure extraction using pre-supplied selectors. No cache, no LLM, no writes."""
+    """Pure extraction using pre-supplied selectors. No cache, no LLM, no writes.
+
+    Applies date_patterns / date_output normalization on both list-page and
+    detail-page dates so callers (refresh path) get ISO strings or None.
+    """
     list_html = fetch_html(url)
     items = _parse_list(list_html, url, list_selectors, max_items)
     records: list[NewsRecord] = []
     for it in items:
+        list_date_iso = normalize_pub_date(
+            it.date, list_selectors.date_patterns, list_selectors.date_output
+        )
         detail: NewsDetail | None = None
         if with_detail and detail_selectors is not None:
             detail_html = fetch_html(it.url)
             detail = _parse_detail(detail_html, detail_selectors)
+            detail_date_iso = normalize_pub_date(
+                detail.date, detail_selectors.date_patterns, detail_selectors.date_output
+            )
+            detail = detail.model_copy(update={"date": detail_date_iso})
         records.append(
-            NewsRecord(title=it.title, url=it.url, date=it.date, detail=detail)
+            NewsRecord(title=it.title, url=it.url, date=list_date_iso, detail=detail)
         )
     return records
