@@ -21,7 +21,7 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from contextvars import ContextVar
 from threading import Lock
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from urllib.parse import urlparse
 
 from .config import SELECTOR_CACHE_PATH
@@ -49,29 +49,48 @@ class CacheStore(ABC):
     @abstractmethod
     def save(self, data: dict[str, Any]) -> None: ...
 
+    @abstractmethod
+    def mutate(self, fn: Callable[[dict[str, Any]], None]) -> None:
+        """Atomic load → fn(data) → save. Required so that two concurrent tool
+        calls (LLM 同一回合发出的并行 tool_calls) 不会在 read-modify-write 之间
+        互相覆盖另一方的 partition。"""
+        ...
+
 
 class FileCacheStore(CacheStore):
     def __init__(self, path: Any = None) -> None:
         self.path = path if path is not None else SELECTOR_CACHE_PATH
         self._lock = Lock()
 
+    def _load_unlocked(self) -> dict[str, Any]:
+        if not self.path.exists():
+            return {}
+        try:
+            with self.path.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            return {}
+
+    def _save_unlocked(self, data: dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".json.tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        tmp.replace(self.path)
+
     def load(self) -> dict[str, Any]:
         with self._lock:
-            if not self.path.exists():
-                return {}
-            try:
-                with self.path.open("r", encoding="utf-8") as f:
-                    return json.load(f)
-            except json.JSONDecodeError:
-                return {}
+            return self._load_unlocked()
 
     def save(self, data: dict[str, Any]) -> None:
         with self._lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".json.tmp")
-            with tmp.open("w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            tmp.replace(self.path)
+            self._save_unlocked(data)
+
+    def mutate(self, fn: Callable[[dict[str, Any]], None]) -> None:
+        with self._lock:
+            data = self._load_unlocked()
+            fn(data)
+            self._save_unlocked(data)
 
 
 class SessionDBCacheStore(CacheStore):
@@ -84,13 +103,17 @@ class SessionDBCacheStore(CacheStore):
     def __init__(self, session_id: str, db_path: str) -> None:
         self.session_id = session_id
         self.db_path = db_path
+        # Process-level lock that serializes load+modify+save. One agent run
+        # constructs a single store via `session_store(...)`, so all sync tools
+        # in that run share this lock and can't race each other.
+        self._lock = Lock()
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, isolation_level=None, timeout=5.0)
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
-    def load(self) -> dict[str, Any]:
+    def _load_unlocked(self) -> dict[str, Any]:
         conn = self._conn()
         try:
             cur = conn.execute(
@@ -111,7 +134,7 @@ class SessionDBCacheStore(CacheStore):
             data.update(json.loads(detail_j))
         return data
 
-    def save(self, data: dict[str, Any]) -> None:
+    def _save_unlocked(self, data: dict[str, Any]) -> None:
         list_d = {k: v for k, v in data.items() if k.startswith("list::")}
         detail_d = {k: v for k, v in data.items() if k.startswith("detail::")}
         conn = self._conn()
@@ -128,6 +151,20 @@ class SessionDBCacheStore(CacheStore):
             )
         finally:
             conn.close()
+
+    def load(self) -> dict[str, Any]:
+        with self._lock:
+            return self._load_unlocked()
+
+    def save(self, data: dict[str, Any]) -> None:
+        with self._lock:
+            self._save_unlocked(data)
+
+    def mutate(self, fn: Callable[[dict[str, Any]], None]) -> None:
+        with self._lock:
+            data = self._load_unlocked()
+            fn(data)
+            self._save_unlocked(data)
 
 
 # ===== current-store ContextVar =====
@@ -165,10 +202,9 @@ def get_list_selectors(url: str, section: str) -> ListSelectors | None:
 
 
 def set_list_selectors(url: str, section: str, sel: ListSelectors) -> None:
-    s = _store()
-    data = s.load()
-    data[list_key(url, section)] = sel.model_dump()
-    s.save(data)
+    key = list_key(url, section)
+    payload = sel.model_dump()
+    _store().mutate(lambda d: d.__setitem__(key, payload))
 
 
 def get_detail_selectors(url: str) -> DetailSelectors | None:
@@ -177,21 +213,23 @@ def get_detail_selectors(url: str) -> DetailSelectors | None:
 
 
 def set_detail_selectors(url: str, sel: DetailSelectors) -> None:
-    s = _store()
-    data = s.load()
-    data[detail_key(url)] = sel.model_dump()
-    s.save(data)
+    key = detail_key(url)
+    payload = sel.model_dump()
+    _store().mutate(lambda d: d.__setitem__(key, payload))
 
 
 def clear(prefix: str | None = None) -> int:
-    s = _store()
-    data = s.load()
-    if prefix is None:
-        count = len(data)
-        s.save({})
-        return count
-    keys_to_drop = [k for k in data if prefix in k]
-    for k in keys_to_drop:
-        del data[k]
-    s.save(data)
-    return len(keys_to_drop)
+    cleared: list[int] = [0]
+
+    def _do(data: dict[str, Any]) -> None:
+        if prefix is None:
+            cleared[0] = len(data)
+            data.clear()
+            return
+        keys_to_drop = [k for k in data if prefix in k]
+        for k in keys_to_drop:
+            del data[k]
+        cleared[0] = len(keys_to_drop)
+
+    _store().mutate(_do)
+    return cleared[0]
