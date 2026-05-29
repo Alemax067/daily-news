@@ -243,14 +243,26 @@ class PaginatedResult:
     stop_reason: StopReason = "quota"
 
 
-def _url_for_page(base_url: str, template: str, n: int) -> str:
+def _url_for_page(base_url: str, template: str, page: int, *, start: int = 2) -> str:
     """Resolve page-N URL: substitute {n} into template, then urljoin against base.
 
+    `start` is the value of {n} that produces page 2's URL. Page N's index is
+    `start + (page - 2)`. Default start=2 covers the common case where page 2
+    is `index_2.html`; sites where page 2 is `index_1.html` (and `index_2.html`
+    is actually page 3) pass start=1.
+
     Examples:
-        base="https://x/col/123/index.html", template="index_{n}.html"  → ".../index_2.html"
-        base="https://x/list?page=1", template="?page={n}"               → ".../list?page=2"
+        base="https://x/col/123/index.html", template="index_{n}.html", page=2, start=2
+            → ".../index_2.html"
+        base="https://x/col/123/index.html", template="index_{n}.html", page=2, start=1
+            → ".../index_1.html"
+        base="https://x/list?page=1", template="?page={n}", page=2, start=2
+            → ".../list?page=2"
     """
-    return urljoin(base_url, template.format(n=n))
+    if page < 2:
+        raise ValueError("_url_for_page only resolves page>=2; page 1 is the base URL")
+    idx = start + (page - 2)
+    return urljoin(base_url, template.format(n=idx))
 
 
 def _build_record(
@@ -319,6 +331,7 @@ def extract_paginated(
 
     result = PaginatedResult()
     template = list_selectors.next_page_template
+    start = list_selectors.next_page_start
     page = 1
     seen_in_run: set[str] = set()
 
@@ -329,7 +342,7 @@ def extract_paginated(
         if page == 1:
             page_url = url
         elif template:
-            page_url = _url_for_page(url, template, page)
+            page_url = _url_for_page(url, template, page, start=start)
         else:
             result.stop_reason = "no_template"
             return result

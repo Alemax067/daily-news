@@ -63,6 +63,16 @@ class ListSelectors(BaseModel):
             "Null if pagination is not detectable."
         ),
     )
+    next_page_start: int = Field(
+        default=2,
+        ge=0,
+        description=(
+            "Value of {n} that produces page 2's URL. Most sites use 2 "
+            "(page 2 = index_2.html); some use 1 (page 2 = index_1.html, "
+            "index_2.html is page 3). Page N's index = next_page_start + (N - 2). "
+            "Ignored when next_page_template is null."
+        ),
+    )
 
 
 class DetailSelectors(BaseModel):

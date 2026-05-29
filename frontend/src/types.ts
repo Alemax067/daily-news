@@ -24,6 +24,7 @@ export interface ListSelectors {
   date: string | null;
   date_attr: "text";
   next_page_template: string | null;
+  next_page_start: number;
 }
 
 export interface DetailSelectors {
