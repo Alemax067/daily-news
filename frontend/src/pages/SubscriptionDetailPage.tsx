@@ -91,7 +91,7 @@ export function SubscriptionDetailPage() {
           {news.data.map((n) => (
             <Link
               key={n.id}
-              to={`/news/${n.id}`}
+              to={`/news/${n.id}?from=preview`}
               className="block px-4 py-3 hover:bg-slate-50"
             >
               <div className="font-medium text-slate-900">{n.title}</div>

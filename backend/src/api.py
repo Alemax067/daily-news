@@ -854,6 +854,25 @@ async def get_news(
     )
 
 
+@app.get("/preview-news/{news_id}", response_model=NewsItemDetailOut)
+async def get_preview_news(
+    news_id: int, db: AsyncSession = Depends(get_session)
+) -> NewsItemDetailOut:
+    n = await db.get(NewsItemPreviewRow, news_id)
+    if n is None:
+        raise HTTPException(status_code=404, detail="preview news item not found")
+    return NewsItemDetailOut(
+        id=n.id,
+        subscription_id=n.subscription_id,
+        url=n.url,
+        title=n.title,
+        pub_date=n.pub_date,
+        source=n.source,
+        content=n.content,
+        fetched_at=n.fetched_at,
+    )
+
+
 # ===== automation: per-subscription patch + tasks =====
 
 

@@ -54,6 +54,14 @@ export function useNewsDetail(id: number | undefined) {
   });
 }
 
+export function usePreviewNewsDetail(id: number | undefined) {
+  return useQuery({
+    queryKey: ["preview-news", id],
+    queryFn: () => api.getPreviewNews(id!),
+    enabled: typeof id === "number",
+  });
+}
+
 export function useRefreshPreview() {
   const qc = useQueryClient();
   return useMutation({

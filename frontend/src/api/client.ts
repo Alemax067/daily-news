@@ -84,4 +84,6 @@ export const api = {
 
   // news
   getNews: (id: number) => request<NewsItemDetail>("GET", `/news/${id}`),
+  getPreviewNews: (id: number) =>
+    request<NewsItemDetail>("GET", `/preview-news/${id}`),
 };

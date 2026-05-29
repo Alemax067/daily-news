@@ -1,5 +1,5 @@
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { useNewsDetail } from "../api/hooks";
+import { useNewsDetail, usePreviewNewsDetail } from "../api/hooks";
 
 function fmtDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -10,13 +10,16 @@ export function NewsDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [params] = useSearchParams();
   const num = id ? parseInt(id, 10) : undefined;
-  const { data, isLoading, error } = useNewsDetail(num);
+  const from = params.get("from");
+  const isPreview = from === "preview";
+  const persistent = useNewsDetail(isPreview ? undefined : num);
+  const preview = usePreviewNewsDetail(isPreview ? num : undefined);
+  const { data, isLoading, error } = isPreview ? preview : persistent;
 
   if (isLoading) return <div className="text-slate-500">加载中…</div>;
   if (error) return <div className="text-red-600">加载失败:{(error as Error).message}</div>;
   if (!data) return null;
 
-  const from = params.get("from");
   const backTo =
     from === "automation"
       ? `/automation/subscriptions/${data.subscription_id}`
