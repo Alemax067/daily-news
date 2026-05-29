@@ -91,30 +91,90 @@ function RunCard({ run }: { run: TimelineRun }) {
 
   return (
     <div className="bg-white rounded-lg border border-slate-200">
-      <div className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50">
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="flex items-center gap-3 flex-1 min-w-0 text-left"
-        >
-          <Chevron open={open} />
-          <SourceBadge source={run.source} />
-          <span className="text-sm text-slate-700">{fmtDateTime(run.triggered_at)}</span>
-          <span className="ml-auto flex items-center gap-3 text-xs text-slate-500">
-            <span>
+      <div className="w-full px-4 py-3 hover:bg-slate-50">
+        {/* 桌面布局:单行 */}
+        <div className="hidden sm:flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="flex items-center gap-3 flex-1 min-w-0 text-left"
+          >
+            <Chevron open={open} />
+            <SourceBadge source={run.source} />
+            <span className="text-sm text-slate-700">{fmtDateTime(run.triggered_at)}</span>
+            <span className="ml-auto flex items-center gap-3 text-xs text-slate-500">
+              <span>
+                {run.task_count} 个订阅
+                {run.failed_count > 0 && (
+                  <span className="text-red-600 ml-1">({run.failed_count} 失败)</span>
+                )}
+              </span>
+              <span>·</span>
+              <span>
+                {subsWithUpdates > 0 ? (
+                  <>
+                    <span className="text-emerald-700 font-medium">
+                      {subsWithUpdates}
+                    </span>{" "}
+                    个订阅有更新,共
+                    <span className="text-emerald-700 font-medium ml-1">
+                      +{run.total_items_added}
+                    </span>{" "}
+                    条
+                  </>
+                ) : (
+                  <span>无更新</span>
+                )}
+              </span>
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={!canExport || exporting}
+            title={
+              canExport
+                ? "导出为 xlsx"
+                : "本次触发没有新增条目"
+            }
+            className={clsx(
+              "ml-2 px-2.5 py-1 rounded text-xs font-medium border whitespace-nowrap",
+              canExport && !exporting
+                ? "bg-white text-slate-700 border-slate-300 hover:bg-slate-100"
+                : "bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed",
+            )}
+          >
+            {exporting ? "导出中…" : "↓ 导出"}
+          </button>
+        </div>
+
+        {/* 移动布局:三行 */}
+        <div className="sm:hidden">
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="w-full text-left"
+          >
+            <div className="flex items-center gap-2">
+              <Chevron open={open} />
+              <SourceBadge source={run.source} />
+              <span className="text-sm text-slate-700">{fmtDateTime(run.triggered_at)}</span>
+            </div>
+            <div className="text-xs text-slate-500 mt-1.5 ml-6">
               {run.task_count} 个订阅
               {run.failed_count > 0 && (
                 <span className="text-red-600 ml-1">({run.failed_count} 失败)</span>
               )}
-            </span>
-            <span>·</span>
-            <span>
+            </div>
+          </button>
+          <div className="mt-2 ml-6 flex items-center gap-2">
+            <span className="text-xs text-slate-500 flex-1 min-w-0">
               {subsWithUpdates > 0 ? (
                 <>
                   <span className="text-emerald-700 font-medium">
                     {subsWithUpdates}
                   </span>{" "}
-                  个订阅有更新,共
+                  订阅 / 共
                   <span className="text-emerald-700 font-medium ml-1">
                     +{run.total_items_added}
                   </span>{" "}
@@ -124,26 +184,21 @@ function RunCard({ run }: { run: TimelineRun }) {
                 <span>无更新</span>
               )}
             </span>
-          </span>
-        </button>
-        <button
-          type="button"
-          onClick={handleExport}
-          disabled={!canExport || exporting}
-          title={
-            canExport
-              ? "导出为 xlsx"
-              : "本次触发没有新增条目"
-          }
-          className={clsx(
-            "ml-2 px-2.5 py-1 rounded text-xs font-medium border whitespace-nowrap",
-            canExport && !exporting
-              ? "bg-white text-slate-700 border-slate-300 hover:bg-slate-100"
-              : "bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed",
-          )}
-        >
-          {exporting ? "导出中…" : "↓ 导出"}
-        </button>
+            <button
+              type="button"
+              onClick={handleExport}
+              disabled={!canExport || exporting}
+              className={clsx(
+                "px-3 py-1.5 rounded text-xs font-medium border whitespace-nowrap shrink-0",
+                canExport && !exporting
+                  ? "bg-white text-slate-700 border-slate-300 hover:bg-slate-100"
+                  : "bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed",
+              )}
+            >
+              {exporting ? "导出中…" : "↓ 导出"}
+            </button>
+          </div>
+        </div>
       </div>
       {exportError && (
         <div className="px-4 pb-2 text-xs text-red-600">

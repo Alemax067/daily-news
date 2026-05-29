@@ -38,8 +38,8 @@ export function NewsDetailPage() {
       <Link to={backTo} className="text-sm text-slate-500 hover:underline">
         {backLabel}
       </Link>
-      <article className="bg-white rounded-lg border border-slate-200 p-6">
-        <h1 className="text-2xl font-semibold leading-tight">{data.title}</h1>
+      <article className="bg-white rounded-lg border border-slate-200 p-4 sm:p-6">
+        <h1 className="text-xl sm:text-2xl font-semibold leading-tight">{data.title}</h1>
         <div className="text-xs text-slate-500 mt-2 flex gap-3 flex-wrap">
           {data.pub_date && <span>发布:{data.pub_date}</span>}
           {data.source && <span>来源:{data.source}</span>}

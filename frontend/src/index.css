@@ -2,5 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
-html, body, #root { height: 100%; }
+html, body, #root { height: 100dvh; min-height: 100dvh; }
 body { @apply bg-slate-50 text-slate-900 font-sans antialiased; }
+
+/* iOS focus 防自动放大 */
+input, select, textarea { font-size: 16px; }
+
+@supports (padding: env(safe-area-inset-bottom)) {
+  .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+}

@@ -65,7 +65,7 @@ export function AutomationSubscriptionPage() {
         >
           {sub.data.url}
         </a>
-        <div className="text-xs text-slate-500 mt-1 flex gap-3">
+        <div className="text-xs text-slate-500 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
           <span>条目数:{sub.data.item_count}</span>
           <span>上次抓取:{fmtDate(sub.data.last_refreshed_at)}</span>
           <span>自动:{sub.data.auto_enabled ? "已开启" : "已关闭"}</span>
@@ -88,10 +88,10 @@ export function AutomationSubscriptionPage() {
                 className="block px-4 py-3 hover:bg-slate-50"
               >
                 <div className="font-medium text-slate-900">{n.title}</div>
-                <div className="text-xs text-slate-500 mt-1 flex gap-3">
+                <div className="text-xs text-slate-500 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
                   {n.pub_date && <span>{n.pub_date}</span>}
                   {n.source && <span>· {n.source}</span>}
-                  <span className="ml-auto">抓取于 {fmtDate(n.fetched_at)}</span>
+                  <span className="sm:ml-auto">抓取于 {fmtDate(n.fetched_at)}</span>
                 </div>
               </Link>
             ))}
@@ -111,55 +111,97 @@ export function AutomationSubscriptionPage() {
         {tasks.isLoading ? (
           <div className="text-slate-500 text-sm">加载中…</div>
         ) : tasks.data && tasks.data.length > 0 ? (
-          <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-left text-slate-600">
-                <tr>
-                  <th className="px-4 py-2">#</th>
-                  <th className="px-4 py-2">状态</th>
-                  <th className="px-4 py-2">来源</th>
-                  <th className="px-4 py-2">入队</th>
-                  <th className="px-4 py-2">耗时</th>
-                  <th className="px-4 py-2">新增/抓取</th>
-                  <th className="px-4 py-2">页数</th>
-                  <th className="px-4 py-2">备注</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {tasks.data.map((t) => {
-                  const b = statusBadge(t.status);
-                  return (
-                    <tr key={t.id} className="align-top">
-                      <td className="px-4 py-2 text-slate-500">{t.id}</td>
-                      <td className="px-4 py-2">
-                        <span className={"px-1.5 py-0.5 rounded text-xs " + b.cls}>
-                          {b.label}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2 text-slate-600">
+          <>
+            {/* 桌面 table */}
+            <div className="hidden md:block bg-white rounded-lg border border-slate-200 overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-left text-slate-600">
+                  <tr>
+                    <th className="px-4 py-2">#</th>
+                    <th className="px-4 py-2">状态</th>
+                    <th className="px-4 py-2">来源</th>
+                    <th className="px-4 py-2">入队</th>
+                    <th className="px-4 py-2">耗时</th>
+                    <th className="px-4 py-2">新增/抓取</th>
+                    <th className="px-4 py-2">页数</th>
+                    <th className="px-4 py-2">备注</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {tasks.data.map((t) => {
+                    const b = statusBadge(t.status);
+                    return (
+                      <tr key={t.id} className="align-top">
+                        <td className="px-4 py-2 text-slate-500">{t.id}</td>
+                        <td className="px-4 py-2">
+                          <span className={"px-1.5 py-0.5 rounded text-xs " + b.cls}>
+                            {b.label}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2 text-slate-600">
+                          {t.source === "manual" ? "手动" : "自动"}
+                        </td>
+                        <td className="px-4 py-2 text-slate-600">{fmtDate(t.enqueued_at)}</td>
+                        <td className="px-4 py-2 text-slate-600">
+                          {durationMs(t.started_at, t.finished_at)}
+                        </td>
+                        <td className="px-4 py-2 text-slate-600">
+                          {t.items_added ?? "—"} / {t.items_fetched ?? "—"}
+                        </td>
+                        <td className="px-4 py-2 text-slate-600">{t.pages_fetched ?? "—"}</td>
+                        <td className="px-4 py-2 text-slate-600 max-w-md">
+                          {t.error ? (
+                            <span className="text-red-600 break-words">{t.error}</span>
+                          ) : (
+                            <span className="text-slate-500">{t.stop_reason ?? "—"}</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* 移动卡片 */}
+            <div className="md:hidden space-y-2">
+              {tasks.data.map((t) => {
+                const b = statusBadge(t.status);
+                return (
+                  <div
+                    key={t.id}
+                    className="bg-white rounded-lg border border-slate-200 p-3 text-sm"
+                  >
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={"px-1.5 py-0.5 rounded text-xs " + b.cls}>
+                        {b.label}
+                      </span>
+                      <span className="text-slate-500 text-xs">#{t.id}</span>
+                      <span className="text-slate-600 text-xs">
                         {t.source === "manual" ? "手动" : "自动"}
-                      </td>
-                      <td className="px-4 py-2 text-slate-600">{fmtDate(t.enqueued_at)}</td>
-                      <td className="px-4 py-2 text-slate-600">
-                        {durationMs(t.started_at, t.finished_at)}
-                      </td>
-                      <td className="px-4 py-2 text-slate-600">
-                        {t.items_added ?? "—"} / {t.items_fetched ?? "—"}
-                      </td>
-                      <td className="px-4 py-2 text-slate-600">{t.pages_fetched ?? "—"}</td>
-                      <td className="px-4 py-2 text-slate-600 max-w-md">
-                        {t.error ? (
-                          <span className="text-red-600 break-words">{t.error}</span>
-                        ) : (
-                          <span className="text-slate-500">{t.stop_reason ?? "—"}</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                      </span>
+                      <span className="text-slate-500 text-xs ml-auto">
+                        {fmtDate(t.enqueued_at)}
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-600 mt-2 flex flex-wrap gap-x-3 gap-y-0.5">
+                      <span>新增/抓取:{t.items_added ?? "—"} / {t.items_fetched ?? "—"}</span>
+                      <span>页数:{t.pages_fetched ?? "—"}</span>
+                      <span>耗时:{durationMs(t.started_at, t.finished_at)}</span>
+                      {!t.error && t.stop_reason && (
+                        <span>· {t.stop_reason}</span>
+                      )}
+                    </div>
+                    {t.error && (
+                      <div className="text-xs text-red-600 mt-1 break-words">
+                        {t.error}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
         ) : (
           <div className="text-center py-12 text-slate-500 bg-white rounded-lg border border-slate-200 text-sm">
             暂无任务

@@ -31,7 +31,7 @@ export function ChatPanel({
   autoFirstMessage,
   onClosed,
   mode = "create",
-  heightClass = "h-[calc(100vh-200px)] min-h-[500px]",
+  heightClass = "h-[calc(100dvh-200px)] min-h-[500px]",
   onConfirmed,
 }: Props) {
   const qc = useQueryClient();
@@ -259,7 +259,7 @@ export function ChatPanel({
       </div>
 
       {/* messages */}
-      <div ref={scrollRef} className="flex-1 overflow-auto p-4 space-y-4">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-4">
         {session.messages.map((m, i) => (
           <MessageBubble key={i} m={m} />
         ))}
@@ -287,7 +287,7 @@ export function ChatPanel({
       </div>
 
       {/* input */}
-      <div className="border-t border-slate-200 p-3">
+      <div className="border-t border-slate-200 p-3 safe-bottom">
         <div className="flex gap-2">
           <textarea
             value={input}
@@ -299,7 +299,7 @@ export function ChatPanel({
                 ? "智能体正在回复…"
                 : "输入反馈,例如「标题对应不上,清缓存重试」或「可以了,保存订阅」"
             }
-            className="flex-1 px-3 py-2 border border-slate-300 rounded-md text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="flex-1 px-3 py-2 border border-slate-300 rounded-md text-base resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
                 e.preventDefault();
@@ -328,7 +328,7 @@ function MessageBubble({
     return (
       <div className="text-xs text-slate-500 bg-slate-50 rounded p-2 border border-slate-200">
         <div className="font-medium">🔧 工具结果 · {m.tool_name}</div>
-        <div className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap font-mono">
+        <div className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all font-mono">
           {m.content.length > 600 ? m.content.slice(0, 600) + "…" : m.content}
         </div>
       </div>
@@ -337,7 +337,7 @@ function MessageBubble({
   if (m.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="bg-blue-600 text-white rounded-lg px-4 py-2 max-w-[80%] whitespace-pre-wrap">
+        <div className="bg-blue-600 text-white rounded-lg px-4 py-2 max-w-[80%] whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
           {m.content}
         </div>
       </div>
@@ -349,7 +349,7 @@ function MessageBubble({
   if (!hasText && !showToolCalls && !streaming) return null;
   return (
     <div className="flex justify-start">
-      <div className="bg-slate-100 text-slate-900 rounded-lg px-4 py-2 max-w-[85%] whitespace-pre-wrap">
+      <div className="bg-slate-100 text-slate-900 rounded-lg px-4 py-2 max-w-[85%] whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
         {showToolCalls && (
           <div className="text-xs text-slate-500 mb-1">
             {m.tool_calls!.map((t, i) => (

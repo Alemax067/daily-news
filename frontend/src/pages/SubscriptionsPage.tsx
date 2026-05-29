@@ -5,6 +5,7 @@ import {
   useSubscriptions,
 } from "../api/hooks";
 import { Button } from "../components/Button";
+import type { Subscription } from "../types";
 
 function fmtDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -35,9 +36,21 @@ export function SubscriptionsPage() {
     );
   }
 
+  const handleRefresh = (id: string) =>
+    refresh.mutate(id, {
+      onSuccess: (r) => alert(`已抓取 ${r.fetched} 条到预览`),
+      onError: (e) => alert("刷新失败:" + (e as Error).message),
+    });
+
+  const handleDelete = (s: Subscription) => {
+    if (confirm(`删除订阅「${s.alias}」及其所有新闻?`)) {
+      del.mutate(s.id);
+    }
+  };
+
   return (
     <div className="space-y-3">
-      <div className="flex items-baseline justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between gap-1">
         <h2 className="text-xl font-semibold">订阅管理 ({data.length})</h2>
         <p className="text-xs text-slate-500">
           这里的「刷新」抓最新 5 条到预览;自动化抓取在
@@ -47,7 +60,9 @@ export function SubscriptionsPage() {
           页设置
         </p>
       </div>
-      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+
+      {/* 桌面 table */}
+      <div className="hidden md:block bg-white rounded-lg border border-slate-200 overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-left text-slate-600">
             <tr>
@@ -77,27 +92,15 @@ export function SubscriptionsPage() {
                 </td>
                 <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                   <Button
+                    size="sm"
                     variant="secondary"
                     className="mr-2"
                     disabled={refresh.isPending && refresh.variables === s.id}
-                    onClick={() =>
-                      refresh.mutate(s.id, {
-                        onSuccess: (r) =>
-                          alert(`已抓取 ${r.fetched} 条到预览`),
-                        onError: (e) => alert("刷新失败:" + (e as Error).message),
-                      })
-                    }
+                    onClick={() => handleRefresh(s.id)}
                   >
                     {refresh.isPending && refresh.variables === s.id ? "刷新中…" : "刷新"}
                   </Button>
-                  <Button
-                    variant="danger"
-                    onClick={() => {
-                      if (confirm(`删除订阅「${s.alias}」及其所有新闻?`)) {
-                        del.mutate(s.id);
-                      }
-                    }}
-                  >
+                  <Button size="sm" variant="danger" onClick={() => handleDelete(s)}>
                     删除
                   </Button>
                 </td>
@@ -105,6 +108,45 @@ export function SubscriptionsPage() {
             ))}
           </tbody>
         </table>
+      </div>
+
+      {/* 移动卡片 */}
+      <div className="md:hidden space-y-3">
+        {data.map((s) => (
+          <div
+            key={s.id}
+            className="bg-white rounded-lg border border-slate-200 p-4 active:bg-slate-50"
+            onClick={() => navigate(`/subscriptions/${s.id}`)}
+          >
+            <div className="font-medium text-slate-900">{s.alias}</div>
+            <div className="text-sm text-slate-600 mt-0.5">板块:{s.section}</div>
+            <div className="text-xs text-slate-500 mt-1 truncate">{s.url}</div>
+            <div className="text-xs text-slate-500 mt-2 flex flex-wrap gap-x-3 gap-y-0.5">
+              <span>预览 {s.preview_item_count} 条</span>
+              <span>· 上次刷新 {fmtDate(s.preview_refreshed_at)}</span>
+            </div>
+            <div
+              className="mt-3 flex gap-2"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Button
+                variant="secondary"
+                className="flex-1"
+                disabled={refresh.isPending && refresh.variables === s.id}
+                onClick={() => handleRefresh(s.id)}
+              >
+                {refresh.isPending && refresh.variables === s.id ? "刷新中…" : "刷新"}
+              </Button>
+              <Button
+                variant="danger"
+                className="flex-1"
+                onClick={() => handleDelete(s)}
+              >
+                删除
+              </Button>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

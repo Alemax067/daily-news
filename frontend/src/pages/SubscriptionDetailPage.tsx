@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ChatPanel } from "../components/ChatPanel";
 import {
@@ -22,6 +23,7 @@ export function SubscriptionDetailPage() {
   const refresh = useRefreshPreview();
   const del = useDeleteSubscription();
   const navigate = useNavigate();
+  const [chatOpen, setChatOpen] = useState(false);
 
   if (sub.isLoading || news.isLoading) {
     return <div className="text-slate-500">加载中…</div>;
@@ -33,8 +35,8 @@ export function SubscriptionDetailPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between">
-        <div>
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+        <div className="min-w-0">
           <Link to="/subscriptions" className="text-sm text-slate-500 hover:underline">
             ← 返回订阅管理
           </Link>
@@ -52,9 +54,10 @@ export function SubscriptionDetailPage() {
             上次预览刷新:{fmtDate(sub.data.preview_refreshed_at)}
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             variant="secondary"
+            className="flex-1 sm:flex-none"
             disabled={refresh.isPending}
             onClick={() =>
               refresh.mutate(sub.data!.id, {
@@ -66,6 +69,7 @@ export function SubscriptionDetailPage() {
           </Button>
           <Button
             variant="danger"
+            className="flex-1 sm:flex-none"
             onClick={() => {
               if (confirm("删除该订阅及全部新闻?")) {
                 del.mutate(sub.data!.id, {
@@ -95,10 +99,10 @@ export function SubscriptionDetailPage() {
               className="block px-4 py-3 hover:bg-slate-50"
             >
               <div className="font-medium text-slate-900">{n.title}</div>
-              <div className="text-xs text-slate-500 mt-1 flex gap-3">
+              <div className="text-xs text-slate-500 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
                 {n.pub_date && <span>{n.pub_date}</span>}
                 {n.source && <span>· {n.source}</span>}
-                <span className="ml-auto">抓取于 {fmtDate(n.fetched_at)}</span>
+                <span className="sm:ml-auto">抓取于 {fmtDate(n.fetched_at)}</span>
               </div>
             </Link>
           ))}
@@ -109,22 +113,82 @@ export function SubscriptionDetailPage() {
         </div>
       )}
 
-      {/* 下半:复用当时的 confirmed session 继续修改选择器 */}
+      {/* 智能体对话:桌面 inline,移动 = 全屏弹层(始终渲染,切换容器类避免 SSE 中断) */}
       <div>
-        <h3 className="text-sm font-medium text-slate-700 mb-2">智能体对话</h3>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-medium text-slate-700">智能体对话</h3>
+          {sessLookup.data?.session_id && (
+            <Button
+              size="sm"
+              variant="secondary"
+              className="md:hidden"
+              onClick={() => setChatOpen(true)}
+            >
+              打开对话
+            </Button>
+          )}
+        </div>
         {sessLookup.isLoading ? (
           <div className="text-slate-500 text-sm">加载会话…</div>
         ) : sessLookup.data?.session_id ? (
-          <ChatPanel
-            sessionId={sessLookup.data.session_id}
-            mode="update"
-            heightClass="h-[480px]"
-            onClosed={() => { /* update 模式 cancel 只是关闭,不做动作 */ }}
-            onConfirmed={() => {
-              alert("订阅规则已更新");
-              sub.refetch();
-            }}
-          />
+          <>
+            {/* 移动:全屏 modal 容器(默认隐藏);桌面:inline 占位容器 */}
+            <div
+              className={
+                chatOpen
+                  ? "fixed inset-0 z-50 bg-white flex flex-col"
+                  : "hidden md:block"
+              }
+            >
+              {/* 移动 modal header(只在 chatOpen 时可见) */}
+              {chatOpen && (
+                <div className="flex items-center justify-between border-b border-slate-200 px-4 py-2 md:hidden">
+                  <span className="text-base font-semibold">智能体对话</span>
+                  <button
+                    type="button"
+                    aria-label="关闭对话"
+                    onClick={() => setChatOpen(false)}
+                    className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] rounded-md text-slate-600 hover:bg-slate-100"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="22"
+                      height="22"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                </div>
+              )}
+              <div className={chatOpen ? "flex-1 min-h-0" : "h-[480px]"}>
+                <ChatPanel
+                  sessionId={sessLookup.data.session_id}
+                  mode="update"
+                  heightClass="h-full"
+                  onClosed={() => { /* update 模式 cancel 只是关闭,不做动作 */ }}
+                  onConfirmed={() => {
+                    alert("订阅规则已更新");
+                    sub.refetch();
+                    setChatOpen(false);
+                  }}
+                />
+              </div>
+            </div>
+            {/* 移动端:未打开时显示一个占位提示 */}
+            {!chatOpen && (
+              <div className="md:hidden bg-white rounded-lg border border-slate-200 p-6 text-sm text-slate-600 text-center">
+                点击右上「打开对话」继续修改选择器
+              </div>
+            )}
+          </>
         ) : (
           <div className="bg-white rounded-lg border border-slate-200 p-6 text-sm text-slate-600">
             找不到该订阅对应的对话(老数据可能没有 session)。

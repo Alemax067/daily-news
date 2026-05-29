@@ -77,9 +77,9 @@ export function AutomationPage() {
   const queue = useLiveQueueSnapshot(queueQ.data);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-100px)]">
+    <div className="flex flex-col h-[calc(100dvh-100px)] sm:h-[calc(100dvh-120px)]">
       {/* header */}
-      <div className="flex items-baseline justify-between mb-3">
+      <div className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between gap-2 mb-3">
         <div>
           <h2 className="text-xl font-semibold">自动化</h2>
           {settings.data && (
@@ -92,11 +92,16 @@ export function AutomationPage() {
           )}
         </div>
         <div className="flex gap-2">
-          <Button variant="secondary" onClick={() => setOpenSettings(true)}>
+          <Button
+            variant="secondary"
+            className="flex-1 sm:flex-none"
+            onClick={() => setOpenSettings(true)}
+          >
             设置
           </Button>
           <Button
             disabled={trigger.isPending}
+            className="flex-1 sm:flex-none"
             onClick={() =>
               trigger.mutate(undefined, {
                 onSuccess: (r) =>
@@ -123,56 +128,103 @@ export function AutomationPage() {
             创建第一个
           </div>
         ) : (
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-left text-slate-600 sticky top-0">
-              <tr>
-                <th className="px-4 py-2">别名</th>
-                <th className="px-4 py-2">URL</th>
-                <th className="px-4 py-2">条目</th>
-                <th className="px-4 py-2">上次抓取</th>
-                <th className="px-4 py-2 w-20 text-center">自动</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
+          <>
+            {/* 桌面 table */}
+            <table className="hidden md:table w-full text-sm">
+              <thead className="bg-slate-50 text-left text-slate-600 sticky top-0">
+                <tr>
+                  <th className="px-4 py-2">别名</th>
+                  <th className="px-4 py-2">URL</th>
+                  <th className="px-4 py-2">条目</th>
+                  <th className="px-4 py-2">上次抓取</th>
+                  <th className="px-4 py-2 w-20 text-center">自动</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {subs.data.map((s) => (
+                  <tr
+                    key={s.id}
+                    className="hover:bg-slate-50 cursor-pointer"
+                    onClick={() => navigate(`/automation/subscriptions/${s.id}`)}
+                  >
+                    <td className="px-4 py-3 font-medium">{s.alias}</td>
+                    <td className="px-4 py-3 text-slate-600 max-w-xs truncate">
+                      {s.url}
+                    </td>
+                    <td className="px-4 py-3">{s.item_count}</td>
+                    <td className="px-4 py-3 text-slate-600">
+                      {fmtDate(s.last_refreshed_at)}
+                    </td>
+                    <td className="px-4 py-3 text-center" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={s.auto_enabled}
+                        onClick={() =>
+                          patch.mutate({ id: s.id, auto_enabled: !s.auto_enabled })
+                        }
+                        className={
+                          "relative inline-flex h-5 w-9 items-center rounded-full transition-colors " +
+                          (s.auto_enabled ? "bg-blue-600" : "bg-slate-300")
+                        }
+                      >
+                        <span
+                          className={
+                            "inline-block h-4 w-4 transform rounded-full bg-white transition-transform " +
+                            (s.auto_enabled ? "translate-x-4" : "translate-x-0.5")
+                          }
+                        />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            {/* 移动卡片 */}
+            <div className="md:hidden divide-y divide-slate-100">
               {subs.data.map((s) => (
-                <tr
+                <div
                   key={s.id}
-                  className="hover:bg-slate-50 cursor-pointer"
+                  className="px-4 py-3 active:bg-slate-50"
                   onClick={() => navigate(`/automation/subscriptions/${s.id}`)}
                 >
-                  <td className="px-4 py-3 font-medium">{s.alias}</td>
-                  <td className="px-4 py-3 text-slate-600 max-w-xs truncate">
-                    {s.url}
-                  </td>
-                  <td className="px-4 py-3">{s.item_count}</td>
-                  <td className="px-4 py-3 text-slate-600">
-                    {fmtDate(s.last_refreshed_at)}
-                  </td>
-                  <td className="px-4 py-3 text-center" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium truncate">{s.alias}</div>
+                      <div className="text-xs text-slate-500 truncate mt-0.5">
+                        {s.url}
+                      </div>
+                    </div>
                     <button
                       type="button"
                       role="switch"
                       aria-checked={s.auto_enabled}
-                      onClick={() =>
-                        patch.mutate({ id: s.id, auto_enabled: !s.auto_enabled })
-                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        patch.mutate({ id: s.id, auto_enabled: !s.auto_enabled });
+                      }}
                       className={
-                        "relative inline-flex h-5 w-9 items-center rounded-full transition-colors " +
+                        "shrink-0 relative inline-flex h-6 w-11 items-center rounded-full transition-colors " +
                         (s.auto_enabled ? "bg-blue-600" : "bg-slate-300")
                       }
                     >
                       <span
                         className={
-                          "inline-block h-4 w-4 transform rounded-full bg-white transition-transform " +
-                          (s.auto_enabled ? "translate-x-4" : "translate-x-0.5")
+                          "inline-block h-5 w-5 transform rounded-full bg-white transition-transform " +
+                          (s.auto_enabled ? "translate-x-5" : "translate-x-0.5")
                         }
                       />
                     </button>
-                  </td>
-                </tr>
+                  </div>
+                  <div className="text-xs text-slate-500 mt-2 flex flex-wrap gap-x-3 gap-y-0.5">
+                    <span>条目 {s.item_count}</span>
+                    <span>· 上次抓取 {fmtDate(s.last_refreshed_at)}</span>
+                  </div>
+                </div>
               ))}
-            </tbody>
-          </table>
+            </div>
+          </>
         )}
       </div>
 
@@ -189,6 +241,8 @@ export function AutomationPage() {
 }
 
 function QueueDock({ snap }: { snap: QueueSnapshot | undefined }) {
+  const [expanded, setExpanded] = useState(false);
+
   if (!snap) {
     return (
       <div className="mt-3 bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-500">
@@ -196,18 +250,31 @@ function QueueDock({ snap }: { snap: QueueSnapshot | undefined }) {
       </div>
     );
   }
+
+  const summary = `${snap.running ? "1 个运行中" : "空闲"} · ${snap.pending.length} 排队 · ${snap.recent_done.length} 完成`;
+
   return (
-    <div className="mt-3 bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs space-y-2">
-      <div className="flex items-baseline gap-3">
-        <span className="font-medium text-slate-700">队列</span>
-        <span className="text-slate-500">
-          {snap.running ? "1 个运行中" : "空闲"} · {snap.pending.length} 个排队 ·
-          最近 {snap.recent_done.length} 个完成
-        </span>
+    <div className="mt-3 bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs space-y-2 safe-bottom">
+      {/* header:桌面/移动同样 */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-baseline gap-2 min-w-0">
+          <span className="font-medium text-slate-700 shrink-0">队列</span>
+          <span className="text-slate-500 truncate">{summary}</span>
+        </div>
+        {/* 移动端展开按钮 */}
+        {(snap.pending.length > 0 || snap.recent_done.length > 0) && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="md:hidden text-slate-500 px-2 py-1 rounded hover:bg-slate-200 shrink-0"
+          >
+            {expanded ? "收起" : "展开"}
+          </button>
+        )}
       </div>
 
       {snap.running && (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className={"px-1.5 rounded " + statusBadge(snap.running.status).cls}>
             {statusBadge(snap.running.status).label}
           </span>
@@ -218,42 +285,45 @@ function QueueDock({ snap }: { snap: QueueSnapshot | undefined }) {
         </div>
       )}
 
-      {snap.pending.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-slate-500">排队中:</span>
-          {snap.pending.slice(0, 8).map((t) => (
-            <span
-              key={t.id}
-              className="px-1.5 rounded bg-slate-200 text-slate-700"
-              title={`#${t.id} · ${t.source} · ${fmtTime(t.enqueued_at)}`}
-            >
-              {t.subscription_alias ?? `#${t.subscription_id.slice(0, 6)}`}
-            </span>
-          ))}
-          {snap.pending.length > 8 && (
-            <span className="text-slate-500">+{snap.pending.length - 8}</span>
-          )}
-        </div>
-      )}
+      {/* 桌面始终展示 pending/done;移动端按 expanded 展示 */}
+      <div className={expanded ? "block" : "hidden md:block"}>
+        {snap.pending.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-slate-500">排队中:</span>
+            {snap.pending.slice(0, 8).map((t) => (
+              <span
+                key={t.id}
+                className="px-1.5 rounded bg-slate-200 text-slate-700"
+                title={`#${t.id} · ${t.source} · ${fmtTime(t.enqueued_at)}`}
+              >
+                {t.subscription_alias ?? `#${t.subscription_id.slice(0, 6)}`}
+              </span>
+            ))}
+            {snap.pending.length > 8 && (
+              <span className="text-slate-500">+{snap.pending.length - 8}</span>
+            )}
+          </div>
+        )}
 
-      {snap.recent_done.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-slate-500">最近完成:</span>
-          {snap.recent_done.slice(0, 6).map((t) => (
-            <span
-              key={t.id}
-              className={"px-1.5 rounded " + statusBadge(t.status).cls}
-              title={
-                t.error
-                  ? t.error
-                  : `添加 ${t.items_added ?? "?"} / 抓取 ${t.items_fetched ?? "?"} · ${t.stop_reason ?? ""}`
-              }
-            >
-              {statusBadge(t.status).label} {t.subscription_alias ?? `#${t.subscription_id.slice(0, 6)}`}
-            </span>
-          ))}
-        </div>
-      )}
+        {snap.recent_done.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 mt-2">
+            <span className="text-slate-500">最近完成:</span>
+            {snap.recent_done.slice(0, 6).map((t) => (
+              <span
+                key={t.id}
+                className={"px-1.5 rounded " + statusBadge(t.status).cls}
+                title={
+                  t.error
+                    ? t.error
+                    : `添加 ${t.items_added ?? "?"} / 抓取 ${t.items_fetched ?? "?"} · ${t.stop_reason ?? ""}`
+                }
+              >
+                {statusBadge(t.status).label} {t.subscription_alias ?? `#${t.subscription_id.slice(0, 6)}`}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
