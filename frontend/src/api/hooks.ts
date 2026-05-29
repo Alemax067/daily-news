@@ -129,6 +129,23 @@ export function useTriggerAutomation() {
     mutationFn: api.triggerAutomation,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["automation", "queue"] });
+      qc.invalidateQueries({ queryKey: ["automation", "timeline"] });
     },
+  });
+}
+
+export function useTimeline(limit = 20) {
+  return useQuery({
+    queryKey: ["automation", "timeline", limit],
+    queryFn: () => api.listTimeline(limit),
+    refetchInterval: 5000,
+  });
+}
+
+export function useTimelineTaskItems(taskId: number | undefined) {
+  return useQuery({
+    queryKey: ["automation", "timeline", "task", taskId],
+    queryFn: () => api.listTimelineTaskItems(taskId!),
+    enabled: typeof taskId === "number",
   });
 }

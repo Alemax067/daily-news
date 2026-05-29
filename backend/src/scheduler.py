@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -172,6 +173,7 @@ async def _run_one_task(state: dict[str, Any], task_id: int) -> None:
                     pub_date=r.date or (d.date if d else None),
                     source=(d.source if d else None),
                     content=(d.content if d else ""),
+                    fetch_task_id=task_id,
                 )
                 .on_conflict_do_nothing(index_elements=["subscription_id", "url"])
             )
@@ -233,6 +235,7 @@ def _next_fire_at(now: datetime, trigger_time: str, interval_hours: int) -> date
 async def _enqueue_auto_run(state: dict[str, Any], reason: str) -> int:
     """Enqueue all auto_enabled subscriptions, source='auto'. Returns count."""
     queue_event: asyncio.Event = state.setdefault("queue_event", asyncio.Event())
+    run_id = str(uuid.uuid4())
     async with SessionLocal() as db:
         sub_ids = (
             (
@@ -244,7 +247,7 @@ async def _enqueue_auto_run(state: dict[str, Any], reason: str) -> int:
             .all()
         )
         for sid in sub_ids:
-            db.add(FetchTask(subscription_id=sid, status="pending", source="auto"))
+            db.add(FetchTask(subscription_id=sid, status="pending", source="auto", run_id=run_id))
         s = await db.get(AppSettings, 1)
         if s is not None:
             s.last_auto_run_at = datetime.now(timezone.utc)

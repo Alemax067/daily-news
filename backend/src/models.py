@@ -1,9 +1,26 @@
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Literal
+from datetime import datetime, timezone
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PlainSerializer
+
+
+def _utc_iso(v: datetime | None) -> str | None:
+    """Serialize datetime as ISO8601 with explicit UTC offset.
+
+    SQLite drops tzinfo on round-trip, so anything coming back from the DB is
+    naive. We stored UTC via _now(); attach UTC here so the browser parses it
+    correctly instead of assuming local time.
+    """
+    if v is None:
+        return None
+    if v.tzinfo is None:
+        v = v.replace(tzinfo=timezone.utc)
+    return v.astimezone(timezone.utc).isoformat()
+
+
+UtcDatetime = Annotated[datetime, PlainSerializer(_utc_iso, return_type=str, when_used="json")]
 
 
 class NewsItem(BaseModel):
@@ -120,12 +137,12 @@ class SubscriptionOut(BaseModel):
     section: str
     auto_enabled: bool = True
     # 自动化路径:由 scheduler worker 写入,展示在 /automation 页
-    last_refreshed_at: datetime | None = None
+    last_refreshed_at: UtcDatetime | None = None
     item_count: int = 0
     # 订阅管理路径:由 refresh-preview 写入,展示在 /subscriptions 页
-    preview_refreshed_at: datetime | None = None
+    preview_refreshed_at: UtcDatetime | None = None
     preview_item_count: int = 0
-    created_at: datetime
+    created_at: UtcDatetime
 
 
 class SubscriptionDetailOut(SubscriptionOut):
@@ -140,7 +157,7 @@ class NewsItemOut(BaseModel):
     title: str
     pub_date: str | None = None
     source: str | None = None
-    fetched_at: datetime
+    fetched_at: UtcDatetime
 
 
 class NewsItemDetailOut(NewsItemOut):
@@ -209,7 +226,7 @@ class AppSettingsOut(BaseModel):
     interval_hours: int
     new_sub_strategy: Literal["first_n", "since_days"]
     new_sub_n: int
-    last_auto_run_at: datetime | None = None
+    last_auto_run_at: UtcDatetime | None = None
 
 
 class AppSettingsIn(BaseModel):
@@ -225,9 +242,9 @@ class FetchTaskOut(BaseModel):
     subscription_alias: str | None = None
     status: Literal["pending", "running", "succeeded", "failed"]
     source: Literal["manual", "auto"]
-    enqueued_at: datetime
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
+    enqueued_at: UtcDatetime
+    started_at: UtcDatetime | None = None
+    finished_at: UtcDatetime | None = None
     items_added: int | None = None
     items_fetched: int | None = None
     pages_fetched: int | None = None
@@ -237,6 +254,55 @@ class FetchTaskOut(BaseModel):
 
 class TriggerAutomationOut(BaseModel):
     enqueued: int
+
+
+class TimelineSubscriptionOut(BaseModel):
+    """单条 run 内某个订阅的状态。只在 timeline 列出 items_added > 0 的订阅。"""
+
+    subscription_id: str
+    subscription_alias: str | None = None
+    task_id: int
+    status: Literal["pending", "running", "succeeded", "failed"]
+    items_added: int
+
+
+class TimelineRunOut(BaseModel):
+    """一次触发(auto 或 manual)的聚合视图,timeline 的基本展示单元。"""
+
+    run_id: str
+    source: Literal["auto", "manual"]
+    triggered_at: UtcDatetime
+    task_count: int
+    finished_count: int
+    succeeded_count: int
+    failed_count: int
+    total_items_added: int
+    subscriptions: list[TimelineSubscriptionOut] = Field(default_factory=list)
+
+
+class TimelineExportItemOut(BaseModel):
+    pub_date: str | None = None
+    title: str
+    url: str
+    fetched_at: UtcDatetime
+
+
+class TimelineExportGroupOut(BaseModel):
+    """导出 xlsx 用的分组:一个订阅一组,内含本次触发新增的条目。"""
+
+    subscription_id: str
+    subscription_alias: str | None = None
+    task_id: int
+    items_added: int
+    items: list[TimelineExportItemOut] = Field(default_factory=list)
+
+
+class TimelineExportOut(BaseModel):
+    run_id: str
+    source: Literal["auto", "manual"]
+    triggered_at: UtcDatetime
+    total_items_added: int
+    groups: list[TimelineExportGroupOut] = Field(default_factory=list)
 
 
 class QueueSnapshotOut(BaseModel):

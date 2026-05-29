@@ -23,8 +23,15 @@ export function NewsDetailPage() {
   const backTo =
     from === "automation"
       ? `/automation/subscriptions/${data.subscription_id}`
-      : `/subscriptions/${data.subscription_id}`;
-  const backLabel = from === "automation" ? "← 返回自动化新闻列表" : "← 返回订阅预览";
+      : from === "timeline"
+        ? `/timeline`
+        : `/subscriptions/${data.subscription_id}`;
+  const backLabel =
+    from === "automation"
+      ? "← 返回自动化新闻列表"
+      : from === "timeline"
+        ? "← 返回时间线"
+        : "← 返回订阅预览";
 
   return (
     <div className="space-y-4">

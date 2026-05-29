@@ -8,6 +8,8 @@ import type {
   SessionView,
   Subscription,
   SubscriptionDetail,
+  TimelineExport,
+  TimelineRun,
 } from "../types";
 
 const BASE = "/api";
@@ -81,6 +83,17 @@ export const api = {
     request<{ enqueued: number }>("POST", "/automation/trigger"),
   getAutomationQueue: () =>
     request<QueueSnapshot>("GET", "/automation/queue"),
+
+  // 时间线
+  listTimeline: (limit = 20, before?: string) => {
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (before) qs.set("before", before);
+    return request<TimelineRun[]>("GET", `/automation/timeline?${qs.toString()}`);
+  },
+  listTimelineTaskItems: (taskId: number) =>
+    request<NewsItem[]>("GET", `/automation/timeline/tasks/${taskId}/items`),
+  exportTimelineRun: (runId: string) =>
+    request<TimelineExport>("GET", `/automation/timeline/runs/${runId}/export`),
 
   // news
   getNews: (id: number) => request<NewsItemDetail>("GET", `/news/${id}`),

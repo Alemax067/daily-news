@@ -98,6 +98,11 @@ class NewsItemRow(Base):
     source: Mapped[str | None] = mapped_column(String(255), nullable=True)
     content: Mapped[str] = mapped_column(Text, default="")
     fetched_at: Mapped[datetime] = mapped_column(default=_now)
+    fetch_task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("fetch_tasks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     subscription: Mapped[Subscription] = relationship(back_populates="news_items")
 
@@ -181,6 +186,7 @@ class FetchTask(Base):
         String(16), default="pending"
     )  # 'pending' | 'running' | 'succeeded' | 'failed'
     source: Mapped[str] = mapped_column(String(8), nullable=False)  # 'manual' | 'auto'
+    run_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     enqueued_at: Mapped[datetime] = mapped_column(default=_now, index=True)
     started_at: Mapped[datetime | None] = mapped_column(default=None)
     finished_at: Mapped[datetime | None] = mapped_column(default=None)

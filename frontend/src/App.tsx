@@ -6,6 +6,7 @@ import { NewSubscriptionPage } from "./pages/NewSubscriptionPage";
 import { NewsDetailPage } from "./pages/NewsDetailPage";
 import { SubscriptionDetailPage } from "./pages/SubscriptionDetailPage";
 import { SubscriptionsPage } from "./pages/SubscriptionsPage";
+import { TimelinePage } from "./pages/TimelinePage";
 
 export default function App() {
   return (
@@ -20,6 +21,7 @@ export default function App() {
           path="automation/subscriptions/:id"
           element={<AutomationSubscriptionPage />}
         />
+        <Route path="timeline" element={<TimelinePage />} />
         <Route path="news/:id" element={<NewsDetailPage />} />
       </Route>
     </Routes>

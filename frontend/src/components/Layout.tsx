@@ -11,6 +11,7 @@ export function Layout() {
             <Tab to="/new">新建订阅</Tab>
             <Tab to="/subscriptions">订阅管理</Tab>
             <Tab to="/automation">自动化</Tab>
+            <Tab to="/timeline">时间线</Tab>
           </nav>
         </div>
       </header>

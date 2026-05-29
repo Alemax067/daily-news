@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -87,6 +88,11 @@ from .models import (
     SubscriptionDetailOut,
     SubscriptionOut,
     SubscriptionPatchIn,
+    TimelineExportGroupOut,
+    TimelineExportItemOut,
+    TimelineExportOut,
+    TimelineRunOut,
+    TimelineSubscriptionOut,
     TriggerAutomationOut,
     UpdateFromSessionIn,
 )
@@ -1062,6 +1068,7 @@ async def trigger_automation(
     db: AsyncSession = Depends(get_session),
 ) -> TriggerAutomationOut:
     """手动触发一轮:把所有 auto_enabled=True 的订阅入队,source='manual'。"""
+    run_id = str(uuid.uuid4())
     rows = (
         (
             await db.execute(
@@ -1072,7 +1079,7 @@ async def trigger_automation(
         .all()
     )
     for sid in rows:
-        db.add(FetchTask(subscription_id=sid, status="pending", source="manual"))
+        db.add(FetchTask(subscription_id=sid, status="pending", source="manual", run_id=run_id))
     await db.commit()
     if rows:
         _queue_event().set()
@@ -1084,6 +1091,225 @@ async def get_queue_snapshot(
     db: AsyncSession = Depends(get_session),
 ) -> QueueSnapshotOut:
     return await _build_queue_snapshot(db)
+
+
+# ===== automation: timeline =====
+
+
+@app.get("/automation/timeline", response_model=list[TimelineRunOut])
+async def list_timeline(
+    limit: int = Query(default=20, ge=1, le=100),
+    before: datetime | None = Query(default=None),
+    db: AsyncSession = Depends(get_session),
+) -> list[TimelineRunOut]:
+    """按 run_id 聚合 fetch_tasks,最新的 run 在前。
+
+    - 只包含 run_id 非空的任务(老数据没 run_id 不计入 timeline)。
+    - `before` 用于翻页:返回 triggered_at 严格早于该时间的 run。
+    - 每个 run 内的 subscriptions 仅包含 items_added > 0 的。
+    """
+    # 一次查询拉出所有候选 task,Python 端聚合。SQLite 上 GROUP BY + 集合聚合
+    # 写起来反而复杂,而且 N 通常 ≤ 几十。
+    q = (
+        select(FetchTask, Subscription.alias)
+        .join(Subscription, Subscription.id == FetchTask.subscription_id)
+        .where(FetchTask.run_id.is_not(None))
+        .order_by(FetchTask.enqueued_at.desc(), FetchTask.id.desc())
+    )
+    rows = (await db.execute(q)).all()
+
+    # 按 run_id 聚合,保持首次出现的顺序(已经按 enqueued_at 倒序)
+    runs: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for task, alias in rows:
+        rid = task.run_id
+        if rid not in runs:
+            runs[rid] = {
+                "run_id": rid,
+                "source": task.source,
+                "triggered_at": task.enqueued_at,
+                "tasks": [],
+            }
+            order.append(rid)
+        bucket = runs[rid]
+        # triggered_at = 该 run 内最早的 enqueued_at
+        if task.enqueued_at < bucket["triggered_at"]:
+            bucket["triggered_at"] = task.enqueued_at
+        bucket["tasks"].append((task, alias))
+
+    # before 过滤
+    if before is not None:
+        bf = before
+        if bf.tzinfo is None:
+            bf = bf.replace(tzinfo=timezone.utc)
+        order = [
+            rid for rid in order
+            if (
+                runs[rid]["triggered_at"].replace(tzinfo=timezone.utc)
+                if runs[rid]["triggered_at"].tzinfo is None
+                else runs[rid]["triggered_at"]
+            ) < bf
+        ]
+
+    # 按 triggered_at 倒序(同一 run 内 task.enqueued_at 几乎相同,但保险起见再排一次)
+    order.sort(key=lambda rid: runs[rid]["triggered_at"], reverse=True)
+    order = order[:limit]
+
+    out: list[TimelineRunOut] = []
+    for rid in order:
+        bucket = runs[rid]
+        tasks: list[tuple[FetchTask, str]] = bucket["tasks"]
+        finished = [t for t, _ in tasks if t.status in ("succeeded", "failed")]
+        succeeded = [t for t, _ in tasks if t.status == "succeeded"]
+        failed = [t for t, _ in tasks if t.status == "failed"]
+        total_added = sum((t.items_added or 0) for t, _ in tasks)
+        subs = [
+            TimelineSubscriptionOut(
+                subscription_id=t.subscription_id,
+                subscription_alias=alias,
+                task_id=t.id,
+                status=t.status,  # type: ignore[arg-type]
+                items_added=t.items_added or 0,
+            )
+            for t, alias in tasks
+            if (t.items_added or 0) > 0
+        ]
+        # 每个 run 内的订阅按 items_added 多 → 少展示
+        subs.sort(key=lambda s: s.items_added, reverse=True)
+        out.append(
+            TimelineRunOut(
+                run_id=rid,
+                source=bucket["source"],
+                triggered_at=bucket["triggered_at"],
+                task_count=len(tasks),
+                finished_count=len(finished),
+                succeeded_count=len(succeeded),
+                failed_count=len(failed),
+                total_items_added=total_added,
+                subscriptions=subs,
+            )
+        )
+    return out
+
+
+@app.get(
+    "/automation/timeline/tasks/{task_id}/items",
+    response_model=list[NewsItemOut],
+)
+async def list_timeline_task_items(
+    task_id: int, db: AsyncSession = Depends(get_session)
+) -> list[NewsItemOut]:
+    """某次任务带回的新闻条目(news_items.fetch_task_id = task_id)。"""
+    task = await db.get(FetchTask, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    sort_key = func.coalesce(
+        NewsItemRow.pub_date,
+        func.strftime("%Y-%m-%d %H:%M:%S", NewsItemRow.fetched_at),
+    )
+    rows = (
+        (
+            await db.execute(
+                select(NewsItemRow)
+                .where(NewsItemRow.fetch_task_id == task_id)
+                .order_by(sort_key.desc(), NewsItemRow.id.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        NewsItemOut(
+            id=n.id,
+            subscription_id=n.subscription_id,
+            url=n.url,
+            title=n.title,
+            pub_date=n.pub_date,
+            source=n.source,
+            fetched_at=n.fetched_at,
+        )
+        for n in rows
+    ]
+
+
+@app.get(
+    "/automation/timeline/runs/{run_id}/export",
+    response_model=TimelineExportOut,
+)
+async def export_timeline_run(
+    run_id: str, db: AsyncSession = Depends(get_session)
+) -> TimelineExportOut:
+    """一次 run 的全部新增条目,按订阅分组。供前端生成 xlsx。
+
+    分组顺序与 timeline 卡片一致:items_added 多 → 少;只包含有更新的订阅。
+    """
+    rows = (
+        await db.execute(
+            select(FetchTask, Subscription.alias)
+            .join(Subscription, Subscription.id == FetchTask.subscription_id)
+            .where(FetchTask.run_id == run_id)
+        )
+    ).all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    triggered_at = min(t.enqueued_at for t, _ in rows)
+    source = rows[0][0].source
+
+    task_ids = [t.id for t, _ in rows if (t.items_added or 0) > 0]
+    items_by_task: dict[int, list[Any]] = {tid: [] for tid in task_ids}
+    if task_ids:
+        sort_key = func.coalesce(
+            NewsItemRow.pub_date,
+            func.strftime("%Y-%m-%d %H:%M:%S", NewsItemRow.fetched_at),
+        )
+        item_rows = (
+            (
+                await db.execute(
+                    select(NewsItemRow)
+                    .where(NewsItemRow.fetch_task_id.in_(task_ids))
+                    .order_by(sort_key.desc(), NewsItemRow.id.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for n in item_rows:
+            if n.fetch_task_id is not None:
+                items_by_task.setdefault(n.fetch_task_id, []).append(n)
+
+    groups: list[TimelineExportGroupOut] = []
+    for task, alias in rows:
+        added = task.items_added or 0
+        if added <= 0:
+            continue
+        groups.append(
+            TimelineExportGroupOut(
+                subscription_id=task.subscription_id,
+                subscription_alias=alias,
+                task_id=task.id,
+                items_added=added,
+                items=[
+                    TimelineExportItemOut(
+                        pub_date=n.pub_date,
+                        title=n.title,
+                        url=n.url,
+                        fetched_at=n.fetched_at,
+                    )
+                    for n in items_by_task.get(task.id, [])
+                ],
+            )
+        )
+    groups.sort(key=lambda g: g.items_added, reverse=True)
+
+    total_added = sum(g.items_added for g in groups)
+    return TimelineExportOut(
+        run_id=run_id,
+        source=source,
+        triggered_at=triggered_at,
+        total_items_added=total_added,
+        groups=groups,
+    )
 
 
 @app.get("/automation/queue/stream")

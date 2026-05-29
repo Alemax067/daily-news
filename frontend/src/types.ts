@@ -121,3 +121,48 @@ export interface AppSettings {
   new_sub_n: number;
   last_auto_run_at?: string | null;
 }
+
+// ===== timeline =====
+
+export interface TimelineSubscription {
+  subscription_id: string;
+  subscription_alias: string | null;
+  task_id: number;
+  status: FetchTaskStatus;
+  items_added: number;
+}
+
+export interface TimelineRun {
+  run_id: string;
+  source: FetchTaskSource;
+  triggered_at: string;
+  task_count: number;
+  finished_count: number;
+  succeeded_count: number;
+  failed_count: number;
+  total_items_added: number;
+  subscriptions: TimelineSubscription[];
+}
+
+export interface TimelineExportItem {
+  pub_date: string | null;
+  title: string;
+  url: string;
+  fetched_at: string;
+}
+
+export interface TimelineExportGroup {
+  subscription_id: string;
+  subscription_alias: string | null;
+  task_id: number;
+  items_added: number;
+  items: TimelineExportItem[];
+}
+
+export interface TimelineExport {
+  run_id: string;
+  source: FetchTaskSource;
+  triggered_at: string;
+  total_items_added: number;
+  groups: TimelineExportGroup[];
+}
