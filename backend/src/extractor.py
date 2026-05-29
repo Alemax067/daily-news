@@ -109,6 +109,16 @@ def _parse_list(html: str, base_url: str, sel: ListSelectors, max_items: int) ->
         link = _extract_attr(url_node, sel.url_attr)
         if not title or not link:
             continue
+        if sel.url_regex:
+            try:
+                m = re.search(sel.url_regex, link)
+            except re.error:
+                m = None
+            if m and m.groups():
+                link = m.group(1)
+            else:
+                # regex 没命中 → 跳过本条,不要拿原始字面量去 urljoin 出错
+                continue
         absolute = urljoin(base_url, link)
         date = _extract_attr(date_node, sel.date_attr) if sel.date else None
         items.append(NewsItem(title=title, url=absolute, date=date))

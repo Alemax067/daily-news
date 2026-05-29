@@ -688,8 +688,7 @@ async def list_subscription_preview_news(
                 .where(NewsItemPreviewRow.subscription_id == sub_id)
                 .order_by(
                     sort_key.desc(),
-                    NewsItemPreviewRow.fetched_at.desc(),
-                    NewsItemPreviewRow.id.desc(),
+                    NewsItemPreviewRow.id.asc(),
                 )
             )
         )
@@ -804,8 +803,7 @@ async def list_subscription_news(
                 .where(NewsItemRow.subscription_id == sub_id)
                 .order_by(
                     sort_key.desc(),
-                    NewsItemRow.fetched_at.desc(),
-                    NewsItemRow.id.desc(),
+                    NewsItemRow.id.asc(),
                 )
                 .limit(limit)
                 .offset(offset)

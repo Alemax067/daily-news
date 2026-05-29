@@ -19,7 +19,7 @@ from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
 # script 单独处理(条件保留 inline 小脚本),不在 _DROP_TAGS 里。
 _DROP_TAGS = {"style", "noscript", "svg", "iframe", "meta", "link"}
-_KEEP_ATTRS_STRUCT = {"class", "id", "href", "name"}
+_KEEP_ATTRS_STRUCT = {"class", "id", "href", "name", "onclick", "data-href", "data-url"}
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 _TEXT_CHAR_BUDGET = 40
 _TEXT_PLACEHOLDER = "_"

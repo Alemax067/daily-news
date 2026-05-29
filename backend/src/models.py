@@ -35,6 +35,14 @@ class ListSelectors(BaseModel):
     title_attr: Literal["text", "title"] = Field(default="text")
     url: str = Field(description="CSS selector inside the item for the link element")
     url_attr: str = Field(default="href")
+    url_regex: str | None = Field(
+        default=None,
+        description=(
+            "Optional regex applied to the extracted attribute value; group 1 "
+            "is the real URL. Use when href is a JS placeholder and the real "
+            "URL lives inside onclick (e.g. r\"jumpToDetail\\('([^']+)'\\)\")."
+        ),
+    )
     date: str | None = Field(default=None, description="CSS selector for date; null if not on list page")
     date_attr: Literal["text"] = Field(default="text")
     date_patterns: list[str] | None = Field(

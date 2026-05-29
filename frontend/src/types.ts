@@ -20,6 +20,7 @@ export interface ListSelectors {
   title_attr: "text" | "title";
   url: string;
   url_attr: string;
+  url_regex: string | null;
   date: string | null;
   date_attr: "text";
   next_page_template: string | null;
