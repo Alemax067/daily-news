@@ -1362,3 +1362,49 @@ def detail_endpoint(url: str) -> dict[str, Any]:
         return extract_detail(url).model_dump()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+# ===== production: serve built frontend at / and API under /api =====
+#
+# Opt-in via the DAILY_NEWS_FRONTEND_DIST env var (set in Dockerfile). Dev
+# mode (`npm run dev`) leaves `app` as the bare FastAPI so vite's proxy —
+# which strips the /api prefix before forwarding — keeps working. We
+# deliberately do NOT auto-detect frontend/dist on disk: a leftover dist
+# from a prior build would silently break dev mode otherwise.
+import os as _os
+from pathlib import Path as _Path
+
+from fastapi.staticfiles import StaticFiles as _StaticFiles
+from starlette.applications import Starlette as _Starlette
+from starlette.exceptions import HTTPException as _StarletteHTTPException
+from starlette.routing import Mount as _Mount
+
+
+class _SPAStaticFiles(_StaticFiles):
+    """StaticFiles that returns index.html for any unmatched path so that
+    React Router's BrowserRouter routes (/timeline, /subscriptions/...) work
+    on hard refresh."""
+
+    async def get_response(self, path, scope):  # type: ignore[override]
+        try:
+            return await super().get_response(path, scope)
+        except _StarletteHTTPException as e:
+            if e.status_code == 404:
+                return await super().get_response("index.html", scope)
+            raise
+
+
+_FRONTEND_DIST_ENV = _os.environ.get("DAILY_NEWS_FRONTEND_DIST")
+if _FRONTEND_DIST_ENV:
+    _FRONTEND_DIST = _Path(_FRONTEND_DIST_ENV)
+    if _FRONTEND_DIST.is_dir():
+        _api_app = app
+        app = _Starlette(  # type: ignore[assignment]
+            routes=[
+                _Mount("/api", app=_api_app),
+                _Mount(
+                    "/", app=_SPAStaticFiles(directory=str(_FRONTEND_DIST), html=True)
+                ),
+            ],
+            lifespan=_api_app.router.lifespan_context,
+        )

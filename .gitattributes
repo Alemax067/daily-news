@@ -1,0 +1,15 @@
+# Force LF for shell scripts and Dockerfiles so Windows checkouts don't
+# break /bin/sh in the container with `^M: bad interpreter`.
+* text=auto eol=lf
+
+*.sh         text eol=lf
+Dockerfile   text eol=lf
+*.dockerfile text eol=lf
+
+# binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.db  binary
