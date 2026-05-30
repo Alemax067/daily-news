@@ -17,5 +17,5 @@ cd /app/backend
 echo "[entrypoint] running alembic upgrade head"
 alembic -c alembic.ini upgrade head
 
-echo "[entrypoint] starting uvicorn on [::]:8765"
-exec uvicorn src.api:app --host :: --port 8765 --app-dir /app/backend
+echo "[entrypoint] starting uvicorn on 0.0.0.0:8765"
+exec uvicorn src.api:app --host 0.0.0.0 --port 8765 --app-dir /app/backend
