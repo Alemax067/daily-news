@@ -6,10 +6,10 @@ services:
     image: daily-news:latest
     container_name: daily-news
     ports:
-      # IPv4 + IPv6 dual-stack. If your Docker host has IPv6 disabled, the
-      # second mapping is silently ignored and the IPv4 one still works.
-      - "0.0.0.0:8765:8765"
-      - "[::]:8765:8765"
+      # Bind to all interfaces. Docker Desktop on Windows/Mac handles
+      # IPv4 + IPv6 loopback through its internal proxy automatically;
+      # explicit "[::]:8765:8765" is unreliable on Windows.
+      - "8765:8765"
     volumes:
       # SQLite database + selectors.json cache; survives container removal.
       - ./data:/app/data
