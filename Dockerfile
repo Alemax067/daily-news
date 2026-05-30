@@ -33,7 +33,7 @@ RUN apt-get update \
 
 WORKDIR /app/backend
 
-COPY backend/pyproject.toml backend/uv.lock ./
+COPY backend/pyproject.toml backend/uv.lock backend/README.md ./
 COPY backend/main.py ./
 COPY backend/src ./src
 RUN uv sync --frozen --no-dev

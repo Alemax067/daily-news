@@ -1,68 +1,136 @@
 # daily-news backend
 
-新闻抓取智能体:输入 URL + 板块名,自动学习页面结构,返回结构化新闻列表与详情。
+News-extraction agent backend. Given a list-page URL and a section name,
+the agent learns the page's CSS selectors with an LLM, caches them, and
+extracts structured news items (and their detail pages) on subsequent
+runs without re-asking the LLM.
 
-## 架构
+Built on FastAPI + SQLite + APScheduler + deepagents (LangGraph).
+
+## What it does
+
+- **Subscriptions**: persist a (URL, section) plus the learned selectors,
+  so each refresh just runs BeautifulSoup, no LLM cost.
+- **Automation**: scheduler periodically refreshes every enabled
+  subscription and inserts new items into `news_items`.
+- **Sessions**: the agent runs as a streaming chat session. Clients
+  consume Server-Sent Events; disconnect-and-resume is supported.
+- **One-shot extraction**: skip the agent and call the extractor
+  directly from the CLI for quick scraping.
+
+## Project layout
 
 ```
-用户输入(url, section)
-        │
-        ▼
-deepagents 智能体  ←── HTTP /chat 或 CLI REPL
-        │
-        └─ tool: extract_news / extract_list_only / extract_detail / clear_selector_cache
-                │
-                ├─ 1. cache 命中 → 用 CSS 选择器解析(BeautifulSoup)
-                └─ 2. cache 未中 → DOM 骨架(脱敏)→ LLM 学习选择器 → 写入缓存
+src/
+  api.py         FastAPI routes (sessions, subscriptions, automation, news)
+  agent.py       deepagents agent + tool registration
+  scheduler.py   background worker + cron-ish scheduler
+  db.py          SQLAlchemy 2.0 async models + alembic bootstrap
+  models.py      Pydantic schemas (in/out)
+  extractor.py   fetch + cache + learn + parse pipeline
+  fetcher.py     httpx HTML fetcher with encoding detection
+  skeleton.py    HTML → de-noised skeleton (avoids LLM content filters)
+  learner.py     LLM call that produces CSS selectors
+  cache.py       data/selectors.json persistence
+  config.py      .env loader (DAILY_NEWS_AGENT_*)
+  cli.py         interactive REPL
+  main.py        entry dispatcher (serve / chat / extract)
+alembic/         schema migrations
 ```
 
-## 模块
+## Setup
 
-| 文件 | 作用 |
-|---|---|
-| `src/config.py` | 读 `.env` (DAILY_NEWS_AGENT_*) |
-| `src/models.py` | Pydantic schemas: NewsItem / NewsDetail / Selectors |
-| `src/fetcher.py` | httpx 抓 HTML(带编码探测) |
-| `src/cache.py` | `data/selectors.json` 持久化 |
-| `src/skeleton.py` | HTML → 脱敏骨架(避开内容过滤) |
-| `src/learner.py` | 调 LLM 推断 CSS 选择器 |
-| `src/extractor.py` | 高层流程:fetch + cache + learn + parse |
-| `src/agent.py` | deepagents 智能体 + 工具注册 |
-| `src/api.py` | FastAPI: `/extract`, `/detail`, `/chat` |
-| `src/cli.py` | 交互式 REPL |
-| `src/main.py` | 入口分发(serve/chat/extract) |
-
-## 运行
+Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 cd backend
+uv sync
+```
 
-# 一次性提取(不走智能体,最快)
-uv run python -m src.main extract \
-  --url https://www.shanghai.gov.cn/nw4411/index.html \
-  --section 上海要闻 --max 5
+Configure `.env` at the **repo root** (one level up from `backend/`):
 
-# 不要详情
-uv run python -m src.main extract --url ... --section ... --no-detail
+```
+DAILY_NEWS_AGENT_API_KEY=<your-key>
+DAILY_NEWS_AGENT_BASE_URL=https://yunwu.ai/v1
+DAILY_NEWS_AGENT_MODEL=deepseek-v4-pro
+```
 
-# 启动 HTTP API
+See `.env.example` for all knobs.
+
+## Running
+
+All commands assume `cd backend` first.
+
+### HTTP server (most common)
+
+```bash
+uv run alembic -c alembic.ini upgrade head      # apply migrations
 uv run python -m src.main serve --port 8765
-# POST http://localhost:8765/extract  body: {"url":"...","section":"...","with_detail":true}
-# POST http://localhost:8765/chat     body: {"message":"...","session_id":"..."}
+```
 
-# 进入对话式 REPL
+Then hit:
+
+- `POST /sessions` + `POST /sessions/{id}/messages` — chat with the agent
+- `GET  /subscriptions` — list saved subscriptions
+- `POST /automation/trigger` — manually run a refresh batch
+- `GET  /automation/timeline` — per-batch summary
+- `POST /extract` — one-shot extraction (legacy, no agent)
+
+Full route list lives at the top of `src/api.py`. OpenAPI docs at
+`http://localhost:8765/docs`.
+
+### Interactive REPL
+
+```bash
 uv run python -m src.main chat
 ```
 
-## 缓存
+Type a URL and a section name; type `:reset` to clear the session,
+`:quit` to exit. Useful for quick agent debugging without spinning up
+the frontend.
 
-- 文件:`../data/selectors.json`
-- key 格式:
-  - `list::{host}{path}::{section}` — 列表页选择器
-  - `detail::{host}` — 详情页选择器(同站点共用模板)
-- 通过 agent 工具 `clear_selector_cache(prefix=...)` 或直接删文件清除
+### One-shot CLI extraction
 
-## 已知问题
+Skips the agent entirely and runs the extractor pipeline directly.
+Fastest way to verify a site is scrapable.
 
-- `yunwu.ai` 网关偶发 429 限流;再试或换模型即可
-- 政府站点详情页结构差异较大,LLM 偶尔会把 title/date/source 选择器搞错,但 `content` 一般正确
+```bash
+# list + detail
+uv run python -m src.main extract \
+  --url https://www.shanghai.gov.cn/nw4411/index.html \
+  --section "上海要闻" --max 5
+
+# list only
+uv run python -m src.main extract --url ... --section ... --no-detail
+```
+
+Output is JSON to stdout.
+
+## Cache
+
+- **File**: `../data/selectors.json` (also mirrored into the SQLite DB
+  per subscription).
+- **Keys**:
+  - `list::{host}{path}::{section}` — list-page selectors
+  - `detail::{host}` — detail-page selectors (one template per host)
+- **Invalidate**: delete the file, or call the agent tool
+  `clear_selector_cache(prefix=...)`.
+
+## Database
+
+SQLite at `../data/app.db`. Schema is managed by Alembic — never edit
+the file by hand. To add a migration:
+
+```bash
+uv run alembic -c alembic.ini revision --autogenerate -m "describe change"
+uv run alembic -c alembic.ini upgrade head
+```
+
+`init_db()` auto-runs `upgrade head` on server startup, so deploying a
+new revision is just a redeploy.
+
+## Production deployment
+
+Don't run this manually in production — use the Docker setup at the
+repo root (`docker compose up -d --build`). The container handles
+migrations and starts uvicorn with the frontend mounted on `/`.
