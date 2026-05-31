@@ -226,7 +226,7 @@ def extract_with_rule(
 
 StopReason = Literal[
     "quota",  # first_n / since_days 配额满
-    "overlap",  # incremental 翻到与已有 url 重叠
+    "overlap",  # incremental 连续 K 条旧 url 即停;新 url 重置计数,容忍开头置顶
     "cutoff",  # since_days pub_date 早于 cutoff
     "max_pages",  # 翻页硬上限触发
     "max_items",  # 总条数硬上限触发
@@ -307,13 +307,15 @@ def extract_paginated(
     max_pages: int = 5,
     max_items: int = 100,
     with_detail: bool = True,
+    overlap_tolerance: int = 5,
 ) -> PaginatedResult:
     """自动化路径抓取:支持翻页 + 多种停止条件。
 
     mode:
       - 'first_n':       拿满 n 条停;n 必填。
       - 'since_days':    拿到 pub_date < (today-n) 停;n 必填(天数)。pub_date 缺失 → 收下不停。
-      - 'incremental':   翻到任意 url 出现在 existing_urls 即停;existing_urls 必填(可空集表示新订阅)。
+      - 'incremental':   连续 overlap_tolerance 条 url 命中 existing_urls 即停;
+                         新 url 重置计数,以容忍开头置顶帖。existing_urls 必填(可空集表示新订阅)。
 
     硬上限:max_pages 和 max_items 任一触发即停。next_page_template=None 只跑第 1 页。
     """
@@ -334,6 +336,7 @@ def extract_paginated(
     start = list_selectors.next_page_start
     page = 1
     seen_in_run: set[str] = set()
+    consecutive_old = 0  # incremental:连续命中 existing_urls 的计数,跨页累计;遇新 url 重置
 
     while True:
         if page > max_pages:
@@ -370,9 +373,16 @@ def extract_paginated(
             seen_in_run.add(item.url)
 
             if mode == "incremental" and item.url in (existing_urls or set()):
-                result.stop_reason = "overlap"
-                return result
+                # 连续命中 existing_urls 超过容忍阈值才停。
+                # 这样既能跳过开头置顶(连续旧 url 数 ≤ 容忍阈值),
+                # 又不会把「DB 因 first_n 配额没覆盖到的位置」误当作新内容回填。
+                consecutive_old += 1
+                if consecutive_old > overlap_tolerance:
+                    result.stop_reason = "overlap"
+                    return result
+                continue
 
+            consecutive_old = 0  # 新 url 重置;允许置顶 → 新内容 → 置顶 → 新内容 这种夹心结构
             rec = _build_record(item, list_selectors, detail_selectors, with_detail)
             pub = _effective_pub_date(rec)
 

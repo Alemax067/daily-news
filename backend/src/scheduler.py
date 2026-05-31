@@ -122,15 +122,20 @@ async def _run_one_task(state: dict[str, Any], task_id: int) -> None:
         )
 
         settings = await db.get(AppSettings, 1)
+        new_sub_n = settings.new_sub_n if settings else 20
         is_new = await _is_new_subscription(db, sub.id)
         if is_new:
             mode = settings.new_sub_strategy if settings else "first_n"
-            n = settings.new_sub_n if settings else 20
+            n = new_sub_n
             existing_urls = None
         else:
             mode = "incremental"
             n = None
             existing_urls = await _existing_urls(db, sub.id)
+        # incremental 容忍连续旧 url 的阈值:跟 first_n 配额挂钩,
+        # 既要 ≥ 站点常见置顶数(P≈3,留 5 起步保守),
+        # 又必须 < new_sub_n - P,否则会跨过「DB 已覆盖前缀」回填永远没抓过的旧内容。
+        overlap_tolerance = max(5, new_sub_n // 4)
 
     # 抓取在 thread 里跑(fetch_html 阻塞 socket)。注意:出 SessionLocal 后再调,
     # 避免长时间持有 DB 连接。
@@ -146,6 +151,7 @@ async def _run_one_task(state: dict[str, Any], task_id: int) -> None:
             max_pages=5,
             max_items=100,
             with_detail=detail_sel is not None,
+            overlap_tolerance=overlap_tolerance,
         )
     except Exception as e:
         log.exception("fetch task %s failed", task_id)
