@@ -90,7 +90,26 @@ def _ensure_detail_selectors(html: str, url: str) -> DetailSelectors:
     return sel
 
 
+_RECORD_CDATA_RE = re.compile(r"<record>\s*<!\[CDATA\[(.*?)\]\]>\s*</record>", re.S)
+
+
+def _decode_xml_datastore(text: str) -> str:
+    """jcms / jpage.js 站的列表数据藏在 `<record><![CDATA[<li>...</li>]]></record>` 里。
+
+    无论 text 是「完整 HTML 含内联 `<script type=text/xml>`」还是「dataproxy.jsp 的纯 XML 响应」,
+    同一条正则都能抠出所有 record 的 CDATA 片段,串起来包进合成 div 喂给 BeautifulSoup。
+
+    没匹配到 → 返回空字符串(上层视作"无数据",不报错)。
+    """
+    fragments = _RECORD_CDATA_RE.findall(text)
+    if not fragments:
+        return ""
+    return '<div id="__jpage_synth__">' + "\n".join(fragments) + "</div>"
+
+
 def _parse_list_css(html: str, base_url: str, sel: ListSelectors, max_items: int) -> list[NewsItem]:
+    if sel.xml_decode_datastore:
+        html = _decode_xml_datastore(html)
     soup = BeautifulSoup(html, "lxml")
     container = soup.select_one(sel.container)
     if container is None:

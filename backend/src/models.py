@@ -104,6 +104,16 @@ class ListSelectors(BaseModel):
             "Ignored when next_page_template is null."
         ),
     )
+    xml_decode_datastore: bool = Field(
+        default=False,
+        description=(
+            "(mode='css') jcms / jpage.js 框架的列表页:真实数据藏在 "
+            "`<script type=\"text/xml\"><datastore><record><![CDATA[<li>...</li>]]></record>...` 里。"
+            "开启后,extractor 在 BeautifulSoup parse 之前先把所有 record 的 CDATA HTML 片段抠出来"
+            "串成合成 DOM,然后照常跑 CSS 选择器(container/item/title/url/date)。"
+            "翻页同样复用 next_page_template,模板写完整 dataproxy.jsp URL 把 page=N 换成 page={n}。"
+        ),
+    )
 
     # ===== JSON mode 字段(mode='json' 下由 validator 强制必填的几个) =====
     json_endpoint: str | None = Field(
