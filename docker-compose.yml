@@ -13,6 +13,12 @@ services:
     volumes:
       # SQLite database + selectors.json cache; survives container removal.
       - ./data:/app/data
+      # 源码 bind-mount:`docker compose down && up -d --no-build` 即可应用新代码,
+      # 不用重 build 镜像。改了 pyproject.toml / uv.lock(新加 Python 依赖)或
+      # frontend 时仍需 `up -d --build` 重新装依赖 / 重 build 前端。
+      - ./backend/src:/app/backend/src
+      - ./backend/alembic:/app/backend/alembic
+      - ./backend/main.py:/app/backend/main.py
     env_file:
       - .env
     restart: unless-stopped

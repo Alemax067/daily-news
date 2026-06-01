@@ -28,6 +28,16 @@ commit_selectors 都必须用用户原始的那个 URL。即使页面是 redirec
 也不要去试别的 URL——这种情况直接告诉用户「该站点暂不支持,请换一个 URL」,**不要 commit**。\
 fetch_skeleton / fetch_text / try_detail_selectors 抓详情页样本或外链 JS 是允许的(URL 必须从骨架/源码里来)。
 
+**SSL / 连接错误处理(关键)**:fetch_skeleton 报 `SSL` / `TLS` / `BAD_ECPOINT` / `certificate` / \
+`connection refused` / `connection reset` 这类底层网络错误时,**不要默默换 http/https 协议绕过去抓**。\
+用户给的 URL 是会话锁定的,即使你用相反协议跑通了调试,commit 保存的还是用户原始 URL,后续自动刷新仍会撞同一个错。\
+**正确做法**:
+1. 用相反协议 fetch_skeleton 一次,**仅用于诊断**(看到底是不是协议层问题)
+2. 把诊断结果告诉用户,**不要 commit_selectors**:
+   - 相反协议能跑通 → 直接告诉用户:「你的 URL `<原 URL>` 撞 SSL/连接错误,改成 `<相反协议 URL>` 后重新创建订阅。」(给出确切的目标 URL)
+   - 两边都不通 → 告诉用户「该站点在当前环境抓不通,暂不支持」
+3. 用户改完 URL 重新发起会话后,工作流从头走
+
 **列表抓取有两种模式**:`css`(传统 HTML + CSS 选择器,**含 jpage / XML datastore 子情形**)、\
 `json`(站点用 JS 模板渲染,数据走后端 JSON API)。\
 **先用 fetch_skeleton 判定模式,然后只走一条工作流,字段不要混填**。详情页一律走 CSS。
