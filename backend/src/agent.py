@@ -38,6 +38,10 @@ fetch_skeleton / fetch_text / try_detail_selectors 抓详情页样本或外链 J
    - 两边都不通 → 告诉用户「该站点在当前环境抓不通,暂不支持」
 3. 用户改完 URL 重新发起会话后,工作流从头走
 
+**硬门(代码强制)**:commit_selectors("list", ...) 内部会检查「会话 URL 是否被 fetch_skeleton 或 \
+try_list_selectors 成功抓到过」。SSL/连接错误时所有抓取都抛异常,这个 flag 永远 False,commit 会被直接拒绝。\
+**意味着**:你不能靠协议偷换来「绕过去」commit;遇到 SSL/连接错误就按上面三步告诉用户换 URL,**不要硬 commit**。
+
 **列表抓取有两种模式**:`css`(传统 HTML + CSS 选择器,**含 jpage / XML datastore 子情形**)、\
 `json`(站点用 JS 模板渲染,数据走后端 JSON API)。\
 **先用 fetch_skeleton 判定模式,然后只走一条工作流,字段不要混填**。详情页一律走 CSS。
@@ -347,6 +351,11 @@ def fetch_skeleton(url: str, max_chars: int = 8000) -> dict[str, Any]:
         html = fetch_html(url)
     except Exception as e:
         return {"url": url, "error": f"抓取失败: {e}"}
+    # 抓到「会话 URL」(用户给的列表页)就翻 flag,commit_selectors(list) 据此放行。
+    # SSL/连接错误时 fetch_html 抛异常 → 永远不会到这里 → flag 保持 False → commit 被拒。
+    sess = cache_mod.session_target()
+    if sess is not None and url == sess[0]:
+        cache_mod.mark_session_url_fetched()
     skeleton = to_skeleton(html, max_chars=max_chars)
     return {
         "url": url,
@@ -426,6 +435,9 @@ def try_list_selectors(
         html = fetch_html(url)
     except Exception as e:
         return {"url": url, "error": f"抓取失败: {e}"}
+    # 与 fetch_skeleton 同步:用会话 URL 抓到了 HTML 也算「URL 可达已确认」。
+    if sess is not None and url == sess[0]:
+        cache_mod.mark_session_url_fetched()
     soup = BeautifulSoup(html, "lxml")
     try:
         container_matched = soup.select_one(sel.container) is not None
@@ -696,6 +708,20 @@ def commit_selectors(
                         f"必须按用户给的目标提交;若用户的 url 抓不到内容,"
                         f"告诉用户该站点暂不支持,不要换 url。"
                         f"翻页失败请把 next_page_template 设为 null 重新 commit。"
+                    )
+                }
+            # 硬门:必须先用会话 URL 成功抓到过 HTML(fetch_skeleton 或 try_list_selectors 命中)。
+            # SSL/TLS/连接错误时 fetch 全部抛异常 → flag=False → 这里直接拒绝,
+            # 防止 agent 偷换协议(http↔https)调试通过后用原 URL 落库,造成自动刷新永久失败。
+            if not cache_mod.is_session_url_fetched():
+                return {
+                    "error": (
+                        f"会话 URL {sess_url!r} 从未被 fetch_skeleton 或 try_list_selectors 成功抓到。"
+                        f"如果是 SSL / TLS / BAD_ECPOINT / certificate / connection 等底层网络错误:"
+                        f"**不要 commit**,直接告诉用户「你的 URL `{sess_url}` 抓不通,"
+                        f"换成 <相反协议的 URL> 后重新创建订阅」(给出确切的目标 URL,如 https→http)。"
+                        f"如果是 redirect / JS 渲染抓不到内容,告诉用户该站点暂不支持。"
+                        f"用相反协议跑通调试**仅用于诊断**,会话锁定的 URL 不能换,所以这里不会放行。"
                     )
                 }
         cache_mod.set_list_selectors(url, section, sel)

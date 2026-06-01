@@ -43,6 +43,11 @@ def detail_key(url: str) -> str:
 
 
 class CacheStore(ABC):
+    # 会话内是否成功用「会话 URL」抓到过 HTML(fetch_skeleton / try_list_selectors 命中)。
+    # commit_selectors("list") 用它做硬门:为 False 时拒绝,逼 agent 走 SSL/URL 替换提示流程
+    # 而不是默默换 http 协议绕过去 → 落库的还是会撞同一个错的原 URL。
+    _session_url_fetched_ok: bool = False
+
     @abstractmethod
     def load(self) -> dict[str, Any]: ...
 
@@ -61,6 +66,13 @@ class CacheStore(ABC):
         SessionDBCacheStore 重写为读 chat_sessions 行,用于 commit 时校验
         agent 没有偷偷把 url 换掉。"""
         return None
+
+    def mark_session_url_fetched(self) -> None:
+        """fetch_skeleton / try_list_selectors 用会话 URL 成功抓到 HTML 时调一次。"""
+        self._session_url_fetched_ok = True
+
+    def is_session_url_fetched(self) -> bool:
+        return self._session_url_fetched_ok
 
 
 class FileCacheStore(CacheStore):
@@ -216,6 +228,15 @@ def _store() -> CacheStore:
 def session_target() -> tuple[str, str] | None:
     """当前会话绑定的 (url, section);CLI 文件后端下返回 None。"""
     return _store().session_target()
+
+
+def mark_session_url_fetched() -> None:
+    """fetch_skeleton / try_list_selectors 用会话 URL 成功抓到 HTML 时调一次。"""
+    _store().mark_session_url_fetched()
+
+
+def is_session_url_fetched() -> bool:
+    return _store().is_session_url_fetched()
 
 
 # ===== public accessors (unchanged signatures) =====
