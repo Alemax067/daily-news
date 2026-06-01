@@ -20,6 +20,15 @@ dependencies = [
     "alembic>=1.18.4",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
 [project.scripts]
 daily-news = "src.main:cli_entry"
 

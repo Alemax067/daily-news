@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import Any
+from urllib.parse import urljoin
 
 import httpx
 
@@ -62,3 +64,53 @@ def fetch_html(url: str, *, force: bool = False) -> str:
         html = resp.text
     _cache_put(url, html)
     return html
+
+
+def fetch_json(
+    endpoint: str,
+    method: str = "POST",
+    body: dict[str, str] | None = None,
+    *,
+    base_url: str | None = None,
+    referer: str | None = None,
+) -> Any:
+    """Hit a JSON API and return parsed dict/list. No caching (paginated bodies vary).
+
+    Args:
+        endpoint: 完整 URL 或相对路径(配合 base_url 走 urljoin)。
+        method: GET 或 POST(大小写不敏感)。
+        body: 请求体字段。POST 用 application/x-www-form-urlencoded(jQuery 默认),
+            GET 作为 query params。jQuery 嵌套写法直接展平到 dict,
+            如 {'datas[0][key]': 'status'}。
+        base_url: 当 endpoint 是相对路径时拼接的基地址(列表页 URL)。
+        referer: 可选 Referer 头,部分 gov API 校验 Referer。
+    """
+    if base_url is not None:
+        endpoint = urljoin(base_url, endpoint)
+    settings = get_settings()
+    headers = {
+        "User-Agent": settings.fetch_user_agent,
+        "Accept": "application/json,text/plain,*/*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    if referer:
+        headers["Referer"] = referer
+    elif base_url:
+        headers["Referer"] = base_url
+
+    with httpx.Client(
+        headers=headers,
+        timeout=settings.fetch_timeout,
+        follow_redirects=True,
+        verify=False,
+    ) as client:
+        m = method.upper()
+        if m == "GET":
+            resp = client.get(endpoint, params=body or {})
+        elif m == "POST":
+            resp = client.post(endpoint, data=body or {})
+        else:
+            raise ValueError(f"unsupported method: {method!r}; only GET / POST")
+        resp.raise_for_status()
+        return resp.json()

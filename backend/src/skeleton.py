@@ -35,9 +35,11 @@ def _trim_text(txt: str) -> str:
 
 
 def _should_keep_script(tag: Tag) -> bool:
-    """Inline + 短小的 script 留下(常见用于 Pager 配置 / JSON-LD);其他都丢。"""
+    """src 脚本(外链 JS)保留为空 body 标签,让 agent 看到文件名(JSON 模式定位 API 的关键);
+    inline 短小 body 保留(常见 Pager 配置 / channelId 变量 / doT 模板)。
+    inline 长 body / 空 body 都丢。"""
     if tag.get("src"):
-        return False
+        return True
     body = tag.string or "".join(
         c for c in tag.strings if isinstance(c, NavigableString)
     )
@@ -52,6 +54,14 @@ def _should_keep_script(tag: Tag) -> bool:
 def _serialize(node: Tag, out: list[str], depth: int, keep_text_in_headings: bool) -> None:
     indent = "  " * depth
     if node.name == "script":
+        src = node.get("src")
+        if src:
+            # 外链 JS:输出空 body 标签,只露 src 路径。trim 跟 href 同套规则。
+            src_str = str(src).split("?", 1)[0]
+            if len(src_str) > 60:
+                src_str = "…" + src_str[-60:]
+            out.append(f'{indent}<script src="{src_str}"/>')
+            return
         body = (node.string or "").strip()
         # 折成单行,让骨架紧凑
         body = re.sub(r"\s+", " ", body)

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, Field, PlainSerializer
+from pydantic import BaseModel, Field, PlainSerializer, model_validator
 
 
 def _utc_iso(v: datetime | None) -> str | None:
@@ -44,13 +44,38 @@ class NewsRecord(BaseModel):
 
 
 class ListSelectors(BaseModel):
-    """CSS selectors for extracting a list of news items from a list page."""
+    """Selectors for extracting a list of news items from a list page.
 
-    container: str = Field(description="CSS selector for the <ul>/<div> wrapping items")
-    item: str = Field(description="CSS selector for a single news item, relative to container")
-    title: str = Field(description="CSS selector inside the item for title text")
+    Two抓取模式:
+      mode='css'  — 传统 HTML + CSS 选择器,大多数政府站走这条
+      mode='json' — 站点用 doT.js / Vue 模板渲染,数据来自后端 JSON API。
+                    agent 通过 fetch_text 读外链 JS 找到 endpoint,直接 POST/GET
+                    拿 JSON,字段映射靠 json_*_field。
+
+    迁移兼容:旧 row 没有 mode 字段时 pydantic 默认填 "css";老 schema 的
+    container/item/title/url 都在,通过 mode='css' 必填校验。
+    """
+
+    mode: Literal["css", "json"] = Field(default="css")
+
+    # ===== CSS mode 字段(放宽为 Optional;mode='css' 下由 validator 强制) =====
+    container: str | None = Field(
+        default=None,
+        description="CSS selector for the <ul>/<div> wrapping items (mode='css' required)",
+    )
+    item: str | None = Field(
+        default=None,
+        description="CSS selector for a single news item, relative to container (mode='css' required)",
+    )
+    title: str | None = Field(
+        default=None,
+        description="CSS selector inside the item for title text (mode='css' required)",
+    )
     title_attr: Literal["text", "title"] = Field(default="text")
-    url: str = Field(description="CSS selector inside the item for the link element")
+    url: str | None = Field(
+        default=None,
+        description="CSS selector inside the item for the link element (mode='css' required)",
+    )
     url_attr: str = Field(default="href")
     url_regex: str | None = Field(
         default=None,
@@ -62,34 +87,109 @@ class ListSelectors(BaseModel):
     )
     date: str | None = Field(default=None, description="CSS selector for date; null if not on list page")
     date_attr: Literal["text"] = Field(default="text")
-    date_patterns: list[str] | None = Field(
-        default=None,
-        description=(
-            "strptime format strings tried in order; first match wins. "
-            "Required by commit_selectors when `date` is non-null."
-        ),
-    )
-    date_output: Literal["iso_date", "iso_datetime"] | None = Field(
-        default=None,
-        description="Normalized output: 'iso_date' → YYYY-MM-DD, 'iso_datetime' → YYYY-MM-DD HH:MM:SS.",
-    )
     next_page_template: str | None = Field(
         default=None,
         description=(
-            "URL pattern for pagination, with {n} as page number placeholder, e.g. 'index_{n}.html'. "
-            "Null if pagination is not detectable."
+            "(mode='css' only) URL pattern for pagination, with {n} as page number, "
+            "e.g. 'index_{n}.html'. Null if pagination is not detectable."
         ),
     )
     next_page_start: int = Field(
         default=2,
         ge=0,
         description=(
-            "Value of {n} that produces page 2's URL. Most sites use 2 "
+            "(mode='css' only) Value of {n} that produces page 2's URL. Most sites use 2 "
             "(page 2 = index_2.html); some use 1 (page 2 = index_1.html, "
             "index_2.html is page 3). Page N's index = next_page_start + (N - 2). "
             "Ignored when next_page_template is null."
         ),
     )
+
+    # ===== JSON mode 字段(mode='json' 下由 validator 强制必填的几个) =====
+    json_endpoint: str | None = Field(
+        default=None,
+        description=(
+            "(mode='json') 完整 URL 或相对路径(相对路径时 urljoin 列表页 URL)。"
+            "agent 应当从外链 JS 源码里抠出来,把 channelId 等变量替换为真值。"
+        ),
+    )
+    json_method: Literal["GET", "POST"] = Field(default="POST")
+    json_body: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "(mode='json') form-encoded body 字段(POST)或 query 参数(GET)。"
+            "jQuery 数组写法直接展平,如 'datas[0][key]': 'status'。"
+        ),
+    )
+    json_results_path: str | None = Field(
+        default=None,
+        description="(mode='json') 点路径定位 results 数组,如 'data.results'。",
+    )
+    json_url_field: str | None = Field(
+        default=None,
+        description="(mode='json') results[i] 里取 url 的字段名,如 'url'。",
+    )
+    json_url_prefix: str = Field(
+        default="",
+        description="(mode='json') 拼到 results[i][json_url_field] 前的固定前缀(很少用)。",
+    )
+    json_title_field: str | None = Field(
+        default=None,
+        description="(mode='json') results[i] 里取 title 的字段名,如 'title'。",
+    )
+    json_date_field: str | None = Field(
+        default=None,
+        description="(mode='json') results[i] 里取 date 的字段名,如 'publishedTimeStr';null 表示 list 不带日期。",
+    )
+    json_page_param: str | None = Field(
+        default=None,
+        description="(mode='json') body 里翻页字段名,如 'page' / 'pageNum'。null 表示无翻页。",
+    )
+    json_page_start: int = Field(
+        default=1,
+        ge=0,
+        description="(mode='json') page 1 对应 json_page_param 的取值;多数 API 是 1。",
+    )
+
+    # ===== 共用 =====
+    date_patterns: list[str] | None = Field(
+        default=None,
+        description=(
+            "strptime format strings tried in order; first match wins. "
+            "Required by commit_selectors when `date` (CSS) or `json_date_field` (JSON) is non-null."
+        ),
+    )
+    date_output: Literal["iso_date", "iso_datetime"] | None = Field(
+        default=None,
+        description="Normalized output: 'iso_date' → YYYY-MM-DD, 'iso_datetime' → YYYY-MM-DD HH:MM:SS.",
+    )
+
+    @model_validator(mode="after")
+    def _check_mode_required(self) -> Self:
+        if self.mode == "css":
+            missing = [
+                f for f in ("container", "item", "title", "url")
+                if getattr(self, f) in (None, "")
+            ]
+            if missing:
+                raise ValueError(
+                    f"mode='css' 必填字段缺失: {missing}"
+                )
+        else:  # mode == 'json'
+            missing = [
+                f for f in (
+                    "json_endpoint",
+                    "json_results_path",
+                    "json_url_field",
+                    "json_title_field",
+                )
+                if getattr(self, f) in (None, "")
+            ]
+            if missing:
+                raise ValueError(
+                    f"mode='json' 必填字段缺失: {missing}"
+                )
+        return self
 
 
 class DetailSelectors(BaseModel):

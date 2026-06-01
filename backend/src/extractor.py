@@ -19,7 +19,7 @@ from bs4 import BeautifulSoup, Tag
 
 from . import cache
 from .config import get_settings
-from .fetcher import fetch_html
+from .fetcher import fetch_html, fetch_json
 from .learner import learn_detail_selectors, learn_list_selectors
 from .models import (
     DetailSelectors,
@@ -90,7 +90,7 @@ def _ensure_detail_selectors(html: str, url: str) -> DetailSelectors:
     return sel
 
 
-def _parse_list(html: str, base_url: str, sel: ListSelectors, max_items: int) -> list[NewsItem]:
+def _parse_list_css(html: str, base_url: str, sel: ListSelectors, max_items: int) -> list[NewsItem]:
     soup = BeautifulSoup(html, "lxml")
     container = soup.select_one(sel.container)
     if container is None:
@@ -123,6 +123,75 @@ def _parse_list(html: str, base_url: str, sel: ListSelectors, max_items: int) ->
         date = _extract_attr(date_node, sel.date_attr) if sel.date else None
         items.append(NewsItem(title=title, url=absolute, date=date))
     return items
+
+
+def _dot_path(payload: object, path: str) -> object:
+    """点路径取值,任意一段不存在 → None。"""
+    cur: object = payload
+    for key in path.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def _parse_list_json(
+    base_url: str, sel: ListSelectors, max_items: int, page: int = 1
+) -> list[NewsItem]:
+    """走站点 JSON API 直接拿列表。
+
+    page 1 对应 body[json_page_param] = json_page_start;
+    page N 对应 json_page_start + (N - 1)。json_page_param 为 None 时只能跑 page=1。
+    """
+    body = dict(sel.json_body or {})
+    if sel.json_page_param:
+        body[sel.json_page_param] = str(sel.json_page_start + (page - 1))
+    elif page > 1:
+        return []
+
+    payload = fetch_json(
+        sel.json_endpoint or "",
+        method=sel.json_method,
+        body=body,
+        base_url=base_url,
+        referer=base_url,
+    )
+
+    results = _dot_path(payload, sel.json_results_path or "")
+    if not isinstance(results, list):
+        return []
+
+    items: list[NewsItem] = []
+    for r in results:
+        if len(items) >= max_items:
+            break
+        if not isinstance(r, dict):
+            continue
+        raw_url = r.get(sel.json_url_field or "")
+        if not raw_url:
+            continue
+        title = r.get(sel.json_title_field or "")
+        if not title:
+            continue
+        link = sel.json_url_prefix + str(raw_url)
+        absolute = urljoin(base_url, link)
+        date_raw = r.get(sel.json_date_field) if sel.json_date_field else None
+        date = str(date_raw).strip() if date_raw else None
+        items.append(NewsItem(title=str(title).strip(), url=absolute, date=date))
+    return items
+
+
+def _parse_list(
+    html: str | None,
+    base_url: str,
+    sel: ListSelectors,
+    max_items: int,
+    page: int = 1,
+) -> list[NewsItem]:
+    """模式分发。JSON 模式忽略 html(可传 None);CSS 模式 html 必给。"""
+    if sel.mode == "json":
+        return _parse_list_json(base_url, sel, max_items, page)
+    return _parse_list_css(html or "", base_url, sel, max_items)
 
 
 def _parse_detail(html: str, sel: DetailSelectors) -> NewsDetail:
@@ -200,7 +269,7 @@ def extract_with_rule(
     Applies date_patterns / date_output normalization on both list-page and
     detail-page dates so callers (refresh path) get ISO strings or None.
     """
-    list_html = fetch_html(url)
+    list_html = fetch_html(url) if list_selectors.mode == "css" else None
     items = _parse_list(list_html, url, list_selectors, max_items)
     records: list[NewsRecord] = []
     for it in items:
@@ -317,7 +386,8 @@ def extract_paginated(
       - 'incremental':   连续 overlap_tolerance 条 url 命中 existing_urls 即停;
                          新 url 重置计数,以容忍开头置顶帖。existing_urls 必填(可空集表示新订阅)。
 
-    硬上限:max_pages 和 max_items 任一触发即停。next_page_template=None 只跑第 1 页。
+    硬上限:max_pages 和 max_items 任一触发即停。
+    CSS 模式下 next_page_template=None,JSON 模式下 json_page_param=None,只能跑第 1 页。
     """
     if mode == "first_n" and (n is None or n < 1):
         raise ValueError("first_n mode requires n >= 1")
@@ -334,6 +404,8 @@ def extract_paginated(
     result = PaginatedResult()
     template = list_selectors.next_page_template
     start = list_selectors.next_page_start
+    json_page_param = list_selectors.json_page_param
+    is_json = list_selectors.mode == "json"
     page = 1
     seen_in_run: set[str] = set()
     consecutive_old = 0  # incremental:连续命中 existing_urls 的计数,跨页累计;遇新 url 重置
@@ -342,18 +414,27 @@ def extract_paginated(
         if page > max_pages:
             result.stop_reason = "max_pages"
             return result
-        if page == 1:
-            page_url = url
-        elif template:
-            page_url = _url_for_page(url, template, page, start=start)
-        else:
-            result.stop_reason = "no_template"
-            return result
 
+        # === 取本页 items:CSS / JSON 路径分别拼 URL / API 调用,共用 _parse_list 入口 ===
         try:
-            html = fetch_html(page_url)
-            # 单页解析量取 max_items 上限,后续硬上限再裁;实际 _parse_list 的 max_items 仅是单页内的截断
-            items = _parse_list(html, page_url, list_selectors, max_items=max_items)
+            if is_json:
+                # JSON 模式:翻页通过 body[json_page_param] = json_page_start + (page-1) 内部完成。
+                # json_page_param=None 时,page>1 直接返回空 → 走下面 no_more_pages / no_template 处理。
+                if page > 1 and not json_page_param:
+                    result.stop_reason = "no_template"
+                    return result
+                items = _parse_list(None, url, list_selectors, max_items, page=page)
+            else:
+                if page == 1:
+                    page_url = url
+                elif template:
+                    page_url = _url_for_page(url, template, page, start=start)
+                else:
+                    result.stop_reason = "no_template"
+                    return result
+                html = fetch_html(page_url)
+                # 单页解析量取 max_items 上限,后续硬上限再裁;实际 _parse_list 的 max_items 仅是单页内的截断
+                items = _parse_list(html, page_url, list_selectors, max_items=max_items)
         except Exception:
             if page == 1:
                 # 第 1 页失败直接抛出,让上层记到 task.error
@@ -400,6 +481,12 @@ def extract_paginated(
                 return result
 
         page += 1
-        if not template:
-            result.stop_reason = "no_template"
-            return result
+        # 跑完本页后看下一页是否可取;模式各自检查翻页字段是否存在
+        if is_json:
+            if not json_page_param:
+                result.stop_reason = "no_template"
+                return result
+        else:
+            if not template:
+                result.stop_reason = "no_template"
+                return result
