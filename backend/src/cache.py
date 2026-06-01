@@ -56,6 +56,12 @@ class CacheStore(ABC):
         互相覆盖另一方的 partition。"""
         ...
 
+    def session_target(self) -> tuple[str, str] | None:
+        """会话绑定的 (url, section) 真值。文件后端没有会话语境,返回 None。
+        SessionDBCacheStore 重写为读 chat_sessions 行,用于 commit 时校验
+        agent 没有偷偷把 url 换掉。"""
+        return None
+
 
 class FileCacheStore(CacheStore):
     def __init__(self, path: Any = None) -> None:
@@ -166,6 +172,20 @@ class SessionDBCacheStore(CacheStore):
             fn(data)
             self._save_unlocked(data)
 
+    def session_target(self) -> tuple[str, str] | None:
+        conn = self._conn()
+        try:
+            cur = conn.execute(
+                "SELECT url, section FROM chat_sessions WHERE id = ?",
+                (self.session_id,),
+            )
+            row = cur.fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        return (row[0], row[1])
+
 
 # ===== current-store ContextVar =====
 
@@ -191,6 +211,11 @@ def session_store(session_id: str, db_path: str) -> Iterator[CacheStore]:
 
 def _store() -> CacheStore:
     return _store_var.get()
+
+
+def session_target() -> tuple[str, str] | None:
+    """当前会话绑定的 (url, section);CLI 文件后端下返回 None。"""
+    return _store().session_target()
 
 
 # ===== public accessors (unchanged signatures) =====

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 from deepagents import create_deep_agent
@@ -21,6 +22,11 @@ from .skeleton import to_skeleton
 _SYSTEM_PROMPT = """你是一个新闻抓取规则调试助手。目标:为用户给定的(列表页 URL + 板块名)\
 迭代地生成一份能正确抓取的「列表选择器 JSON」和「详情选择器 JSON」,把日期解析模板固化下来,\
 最后告诉用户点界面上的「保存订阅」。
+
+**硬约束:用户给的列表页 URL 是固定的,不允许换。** try_list_selectors / try_pagination / \
+commit_selectors 都必须用用户原始的那个 URL。即使页面是 redirect / 空壳 / JS 渲染抓不到内容,\
+也不要去试别的 URL——这种情况直接告诉用户「该站点暂不支持,请换一个 URL」,**不要 commit**。\
+fetch_skeleton / try_detail_selectors 抓详情页样本是允许的(详情 URL 来自 list samples)。
 
 可用工具:
 - fetch_skeleton(url, max_chars=8000):抓 URL 并返回脱敏 HTML 骨架。骨架里大部分文本被替换成 _,\
@@ -148,7 +154,10 @@ def fetch_skeleton(url: str, max_chars: int = 8000) -> dict[str, Any]:
         url: 要观察的页面 URL,列表页或详情页都可以。
         max_chars: 骨架最大字符数,过长做头尾截断。默认 8000。
     """
-    html = fetch_html(url)
+    try:
+        html = fetch_html(url)
+    except Exception as e:
+        return {"url": url, "error": f"抓取失败: {e}"}
     skeleton = to_skeleton(html, max_chars=max_chars)
     return {
         "url": url,
@@ -183,22 +192,43 @@ def try_list_selectors(
     """用候选 list selectors 对 URL 抓出来跑一遍,返回 container_matched / item_count / samples
     (每条带 date_raw 和 date_normalized)。用于在 commit 前迭代验证。
 
+    **url 必须与用户给的列表页 URL 一致,不允许换。**如果用户的 URL 抓不到内容(redirect / JS \
+    渲染 / 反爬),告诉用户该站点暂不支持,不要去试其他 URL。
+
     Args:
-        url: 列表页 URL。
+        url: 列表页 URL,必须与用户在创建订阅时给的一致。
         selectors: ListSelectors 的 JSON dict;date_patterns/date_output 可暂不填。
         max_items: 最多返回多少条样本。默认 5。
     """
+    sess = cache_mod.session_target()
+    if sess is not None:
+        sess_url, _ = sess
+        if url != sess_url:
+            return {
+                "error": (
+                    f"url 必须用用户给的列表页 URL,不允许换。"
+                    f"会话目标:{sess_url!r};你传入的:{url!r}。"
+                    f"如果用户的 URL 抓不到内容(redirect / JS 渲染 / 反爬),"
+                    f"告诉用户该站点暂不支持,不要换 url。"
+                )
+            }
     try:
         sel = ListSelectors.model_validate(selectors)
     except Exception as e:
         return {"error": f"ListSelectors 校验失败: {e}"}
-    html = fetch_html(url)
+    try:
+        html = fetch_html(url)
+    except Exception as e:
+        return {"url": url, "error": f"抓取失败: {e}"}
     soup = BeautifulSoup(html, "lxml")
     try:
         container_matched = soup.select_one(sel.container) is not None
     except Exception as e:
         return {"error": f"container 选择器无效: {e}"}
-    items = extractor._parse_list(html, url, sel, max_items)
+    try:
+        items = extractor._parse_list(html, url, sel, max_items)
+    except Exception as e:
+        return {"error": f"item / 内层选择器无效或解析失败: {e}"}
     return {
         "container_matched": container_matched,
         "item_count": len(items),
@@ -222,7 +252,10 @@ def try_detail_selectors(
         sel = DetailSelectors.model_validate(selectors)
     except Exception as e:
         return {"error": f"DetailSelectors 校验失败: {e}"}
-    html = fetch_html(url)
+    try:
+        html = fetch_html(url)
+    except Exception as e:
+        return {"url": url, "error": f"抓取失败: {e}"}
     detail = extractor._parse_detail(html, sel)
     content = detail.content or ""
     return {
@@ -270,6 +303,17 @@ def try_pagination(
         return {"error": "template 必须包含 {n} 占位符,例如 'index_{n}.html'"}
     if start < 0:
         return {"error": "start 必须 >= 0"}
+    sess = cache_mod.session_target()
+    if sess is not None:
+        sess_url, sess_section = sess
+        if cache_mod.list_key(url, section) != cache_mod.list_key(sess_url, sess_section or ""):
+            return {
+                "error": (
+                    f"url/section 必须与会话目标一致,不允许换。"
+                    f"会话目标:url={sess_url!r}, section={sess_section!r};"
+                    f"你传入的:url={url!r}, section={section!r}。"
+                )
+            }
     sel = cache_mod.get_list_selectors(url, section)
     if sel is None:
         return {
@@ -283,7 +327,13 @@ def try_pagination(
         html = fetch_html(next_url)
     except Exception as e:
         return {"next_page_url": next_url, "error": f"抓取第 2 页失败: {e}"}
-    items = extractor._parse_list(html, next_url, sel, max_items)
+    try:
+        items = extractor._parse_list(html, next_url, sel, max_items)
+    except Exception as e:
+        return {
+            "next_page_url": next_url,
+            "error": f"已 commit 的 list 选择器在第 2 页解析失败: {e}",
+        }
     # 防误报:有的站点对未知 query 直接忽略,?page=2 返回页 1 原样。
     # 抓一次第 1 页对比 url 集合,若全重合说明模板无效。
     try:
@@ -366,6 +416,11 @@ def commit_selectors(
     date 非 null 时 selectors 必须带 date_patterns(list[str])和 date_output("iso_date"|"iso_datetime"),
     否则本工具会拒绝。
 
+    **url / section 必须与用户在创建订阅时给的一致**——本工具会按会话目标校验,不允许偷换 url
+    或板块名(否则 cache key 与保存时的查找 key 对不上,会保存失败)。如果用户给的 url 抓不到内容,
+    在对话里告诉用户该站点暂不支持,**不要 commit**;只有翻页规则不可用时,才把 list_selectors.
+    next_page_template 设为 null 重新 commit,这是允许的 fallback。
+
     Args:
         target: "list" 或 "detail"。
         url: 列表页 URL(detail commit 也传列表页 URL 即可;host 决定 cache key)。
@@ -375,6 +430,7 @@ def commit_selectors(
     err = _check_date_fields(selectors)
     if err is not None:
         return {"error": err}
+    sess = cache_mod.session_target()
     if target == "list":
         if not section:
             return {"error": "list commit 必须带 section(用户给的板块名)"}
@@ -382,16 +438,37 @@ def commit_selectors(
             sel = ListSelectors.model_validate(selectors)
         except Exception as e:
             return {"error": f"ListSelectors 校验失败: {e}"}
+        if sess is not None:
+            sess_url, sess_section = sess
+            if cache_mod.list_key(url, section) != cache_mod.list_key(sess_url, sess_section or ""):
+                return {
+                    "error": (
+                        f"提交的 url/section 与本会话目标不一致。"
+                        f"会话目标:url={sess_url!r}, section={sess_section!r};"
+                        f"你提交的:url={url!r}, section={section!r}。"
+                        f"必须按用户给的目标提交;若用户的 url 抓不到内容,"
+                        f"告诉用户该站点暂不支持,不要换 url。"
+                        f"翻页失败请把 next_page_template 设为 null 重新 commit。"
+                    )
+                }
         cache_mod.set_list_selectors(url, section, sel)
         return {"ok": True, "target": "list", "section": section}
-    if target == "detail":
+    else:  # target == "detail"
         try:
             sel = DetailSelectors.model_validate(selectors)
         except Exception as e:
             return {"error": f"DetailSelectors 校验失败: {e}"}
+        if sess is not None:
+            sess_url, _ = sess
+            if urlparse(url).netloc != urlparse(sess_url).netloc:
+                return {
+                    "error": (
+                        f"detail commit 的 url host ({urlparse(url).netloc!r}) 与会话目标 host "
+                        f"({urlparse(sess_url).netloc!r}) 不一致;必须用同站点 url。"
+                    )
+                }
         cache_mod.set_detail_selectors(url, sel)
         return {"ok": True, "target": "detail"}
-    return {"error": f"unknown target: {target!r}; 必须是 'list' 或 'detail'"}
 
 
 @tool
